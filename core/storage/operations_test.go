@@ -2,83 +2,17 @@ package storage
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"flow-network/flow/core/types"
+	"flow-network/flow/core/infra"
 
-	crdt "github.com/ipfs/go-ds-crdt"
-	datastore "github.com/ipfs/go-datastore"
-	dsync "github.com/ipfs/go-datastore/sync"
-	cid "github.com/ipfs/go-cid"
-	ipld "github.com/ipfs/go-ipld-format"
+	"github.com/ipfs/go-cid"
+	"github.com/ipfs/go-datastore"
 	"github.com/stretchr/testify/require"
 	mh "github.com/multiformats/go-multihash"
 )
-
-// mockDagService provides a minimal implementation of ipld.DAGService for testing.
-type mockDagService struct {
-	// Add fields if needed for more complex mocks, e.g., a map to store nodes
-}
-
-// Compile-time check to ensure mockDagService satisfies ipld.DAGService
-var _ ipld.DAGService = (*mockDagService)(nil)
-
-func (m *mockDagService) Add(ctx context.Context, node ipld.Node) error {
-	// No-op for this simple mock
-	return nil
-}
-
-func (m *mockDagService) AddMany(ctx context.Context, nodes []ipld.Node) error {
-	// No-op for this simple mock
-	return nil
-}
-
-func (m *mockDagService) Get(ctx context.Context, c cid.Cid) (ipld.Node, error) {
-	// Return ErrNotFound or a predefined node if needed for specific tests
-	return nil, ipld.ErrNotFound{Cid: c}
-}
-
-func (m *mockDagService) GetMany(ctx context.Context, cids []cid.Cid) <-chan *ipld.NodeOption {
-	// Return a channel that immediately closes or sends ErrNotFound
-	ch := make(chan *ipld.NodeOption, 1)
-	defer close(ch)
-	// Or loop through cids and send NodeOption with ErrNotFound for each
-	return ch
-}
-
-func (m *mockDagService) Remove(ctx context.Context, c cid.Cid) error {
-	// No-op for this simple mock
-	return nil
-}
-
-func (m *mockDagService) RemoveMany(ctx context.Context, cids []cid.Cid) error {
-	// No-op for this simple mock
-	return nil
-}
-
-// setupTestStores creates in-memory datastores for testing.
-// It returns a CRDT store and a base datastore.
-func setupTestStores(t *testing.T) (*crdt.Datastore, datastore.Datastore) {
-	// Base store (simple map datastore)
-	baseStore := dsync.MutexWrap(datastore.NewMapDatastore())
-
-	// Minimal DAGService mock needed for crdt.New
-	mockDag := &mockDagService{}
-
-	// CRDT store setup (requires a base store and a broadcaster)
-	// For this test, we don't need real pubsub, so a nil broadcaster is acceptable
-	// as we are testing local Save/Load, not replication.
-	crdtOpts := crdt.DefaultOptions()
-	crdtStore, err := crdt.New(baseStore, datastore.NewKey("crdt"), mockDag, nil /* broadcaster */, crdtOpts)
-	require.NoError(t, err, "Failed to create CRDT store")
-
-	t.Cleanup(func() {
-		// Ensure CRDT store is closed cleanly
-		crdtStore.Close()
-	})
-
-	return crdtStore, baseStore
-}
 
 // createTestFlowObject creates a sample FlowObject with a deterministic CID.
 func createTestFlowObject(t *testing.T, state []byte, meta map[string]interface{}) *types.FlowObject {
@@ -96,18 +30,48 @@ func createTestFlowObject(t *testing.T, state []byte, meta map[string]interface{
 		require.NoError(t, err)
 	}
 
-	return &types.FlowObject{
+	obj := &types.FlowObject{
 		ID:         objCid,
 		ObjectType: "test-object",
 		Metadata:   meta,
 		State:      state,
 		Sequence:   1,
 	}
+	t.Logf("Created test object with ID: %s", obj.ID)
+	return obj
 }
 
 func TestSaveLoadFlowObject(t *testing.T) {
 	ctx := context.Background()
-	crdtStore, baseStore := setupTestStores(t)
+
+	// --- Setup using infra.SetupCRDT ---
+	tempDir, err := os.MkdirTemp(os.TempDir(), "flow-op-test-*")
+	require.NoError(t, err, "Failed to create temp dir")
+	t.Logf("Using temp directory for Badger: %s", tempDir)
+
+	badgerOpts := infra.BadgerOptions{Path: tempDir}
+	// Use placeholder Libp2p options; networking isn't tested here
+	p2pOpts := infra.Libp2pOptions{}
+
+	services, err := infra.SetupCRDT(ctx, badgerOpts, p2pOpts)
+	require.NoError(t, err, "infra.SetupCRDT failed")
+	require.NotNil(t, services, "infra.SetupCRDT returned nil services")
+
+	// Ensure cleanup via t.Cleanup, which calls services.Close()
+	t.Cleanup(func() {
+		t.Logf("Closing CRDT services and removing temp directory: %s", tempDir)
+		if cerr := services.Close(); cerr != nil {
+			t.Errorf("Error closing CRDT services: %v", cerr)
+		}
+		// Attempt to remove temp dir *after* services (especially badger) are closed
+		if rerr := os.RemoveAll(tempDir); rerr != nil {
+			t.Errorf("Error removing temp directory %s: %v", tempDir, rerr)
+		}
+	})
+
+	crdtStore := services.CrdtStore
+	baseStore := services.BaseStore
+	// --- End Setup ---
 
 	// 1. Test saving and loading a valid object
 	t.Run("SaveAndLoadValid", func(t *testing.T) {
@@ -183,19 +147,16 @@ func TestSaveLoadFlowObject(t *testing.T) {
 	// 7. Test object with empty state
 	t.Run("SaveAndLoadEmptyState", func(t *testing.T) {
 		originalObj := createTestFlowObject(t, []byte{}, map[string]interface{}{"status": "empty"})
+		t.Logf("Testing empty state with ID: %s", originalObj.ID)
 
 		err := SaveFlowObject(ctx, crdtStore, baseStore, originalObj)
 		require.NoError(t, err, "SaveFlowObject with empty state failed")
 
 		loadedObj, err := LoadFlowObject(ctx, crdtStore, baseStore, originalObj.ID)
 		require.NoError(t, err, "LoadFlowObject with empty state failed")
-		require.NotNil(t, loadedObj)
+		require.NotNil(t, loadedObj, "Expected loaded object not to be nil")
 		require.Equal(t, originalObj.ID, loadedObj.ID)
-		// When state is saved as `[]byte{}`, it should be loaded back as non-nil empty slice.
-		require.NotNil(t, loadedObj.State, "Expected loaded state to be non-nil when saved as empty slice")
 		require.Len(t, loadedObj.State, 0, "Expected loaded state to be empty slice")
 		require.Equal(t, originalObj.Metadata, loadedObj.Metadata)
 	})
-
-	// TODO: Add tests for potential inconsistencies? (e.g., meta exists, state doesn't - although Load handles this)
 }

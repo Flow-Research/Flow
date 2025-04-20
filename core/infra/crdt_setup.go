@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	badgerds "github.com/ipfs/go-ds-badger"
+	badgerds "github.com/ipfs/go-ds-badger3" // Use badger3
 	datastore "github.com/ipfs/go-datastore"
 	crdt "github.com/ipfs/go-ds-crdt"
 	logging "github.com/ipfs/go-log/v2"
@@ -50,8 +50,9 @@ func SetupCRDT(ctx context.Context, badgerOpts BadgerOptions, p2pOpts Libp2pOpti
 	// 1. Initialize Base Datastore (Badger)
 	log.Infof("Initializing Badger datastore at %s", badgerOpts.Path)
 	dsOpts := badgerds.DefaultOptions
-	// Customize dsOpts if needed (e.g., SyncWrites)
-	baseDs, err := badgerds.NewDatastore(badgerOpts.Path, &dsOpts)
+	// Badger3 options are slightly different, ensure Truncate/other defaults are suitable
+	// dsOpts.Truncate = true // Not directly available in badger3 options struct
+	baseDs, err := badgerds.NewDatastore(badgerOpts.Path, &dsOpts) // Using badger3's NewDatastore
 	if err != nil {
 		return nil, fmt.Errorf("failed to create base badger datastore: %w", err)
 	}

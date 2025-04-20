@@ -10,26 +10,27 @@ import (
 )
 
 func TestSetupCRDT(t *testing.T) {
-	// Create a temporary directory for the Badger datastore
-	tempDir, err := os.MkdirTemp("", "flow-crdt-test-*")
+	ctx := context.Background()
+
+	tempDir, err := os.MkdirTemp(os.TempDir(), "crdt-setup-test-*")
 	require.NoError(t, err, "Failed to create temp dir")
 	t.Logf("Using temp directory for Badger: %s", tempDir)
 
-	// Ensure cleanup happens even if test fails
-	defer func() {
-		err := os.RemoveAll(tempDir)
-		if err != nil {
-			t.Logf("Warning: failed to remove temp dir %s: %v", tempDir, err)
+	// Cleanup function to remove the temp directory
+	t.Cleanup(func() {
+		t.Logf("Cleaning up temp directory: %s", tempDir)
+		if rerr := os.RemoveAll(tempDir); rerr != nil {
+			t.Errorf("Error removing temp directory %s: %v", tempDir, rerr)
 		}
-	}()
+	})
 
-	// Define test options
+	// Configure options for SetupCRDT
 	badgerOpts := BadgerOptions{
-		Path: tempDir, // Correct field name
+		Path: tempDir,
 	}
-	// Explicitly request ephemeral port listening
-	lp2pOpts := Libp2pOptions{
-		ListenAddrs: []string{"/ip4/0.0.0.0/tcp/0"}, // Correct field name and value
+	// Use placeholder Libp2p options for now, as we aren't testing networking itself here
+	p2pOpts := Libp2pOptions{
+		ListenAddrs: []string{"/ip4/0.0.0.0/tcp/0"},
 		// BootstrapPeers and PubSubTopic are handled internally by SetupCRDT
 	}
 
@@ -38,7 +39,7 @@ func TestSetupCRDT(t *testing.T) {
 
 	// Setup CRDT Services
 	t.Log("Setting up CRDT services...")
-	services, err := SetupCRDT(ctx, badgerOpts, lp2pOpts) // Corrected arguments
+	services, err := SetupCRDT(ctx, badgerOpts, p2pOpts) // Corrected arguments
 	require.NoError(t, err, "SetupCRDT failed")
 	require.NotNil(t, services, "SetupCRDT returned nil services")
 

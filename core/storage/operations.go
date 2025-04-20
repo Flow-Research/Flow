@@ -108,10 +108,20 @@ func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore da
 	}
 
 	// 2. Load state from crdtStore
+	var stateNotFound bool
 	stateBytes, err := crdtStore.Get(ctx, key)
-	stateNotFound := errors.Is(err, datastore.ErrNotFound)
-	if err != nil && !stateNotFound {
-		return nil, fmt.Errorf("failed to get state for FlowObject %s from CRDT store: %w", id, err)
+	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			stateNotFound = true
+			stateBytes = nil // Ensure stateBytes is nil if truly not found
+		} else {
+			// Handle other potential errors during Get
+			return nil, fmt.Errorf("failed to get state for FlowObject %s from CRDT store: %w", id, err)
+		}
+	} else if len(stateBytes) == 0 {
+		// Explicitly check if Get succeeded but returned an empty slice
+		opLog.Debugf("FlowObject %s state loaded as empty slice from CRDT store.", id)
+		// stateBytes is already []byte{}, so no change needed, stateNotFound remains false.
 	}
 
 	// Handle cases where one part is missing
@@ -124,7 +134,7 @@ func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore da
 	} else if stateNotFound {
 		// Metadata exists but state doesn't - might be valid if state can be empty/nil
 		opLog.Warnf("FlowObject %s state not found in CRDT store, but metadata exists. Returning object with nil state.", id)
-		stateBytes = nil // Explicitly set to nil
+		// stateBytes was already set to nil when stateNotFound was determined
 	}
 
 	// 3. Deserialize metadata
@@ -145,7 +155,7 @@ func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore da
 		ObjectType: meta.ObjectType,
 		Metadata:   meta.Metadata,
 		Sequence:   meta.Sequence,
-		State:      stateBytes, // Assign loaded state (could be nil if not found but meta was)
+		State:      stateBytes, // Assign loaded state (now correctly []byte{} or nil)
 	}
 
 	opLog.Infof("Successfully loaded FlowObject %s (State: %d bytes, Meta: %d bytes)", obj.ID, len(obj.State), len(metaBytes))
