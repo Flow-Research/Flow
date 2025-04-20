@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"flow-network/flow/core/types"
@@ -12,30 +13,37 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 )
 
-var opLog = logging.Logger("flow-storage-ops")
+var opLog = logging.Logger("core/storage/operations")
 
-// GenerateKeyFromObjectID creates a datastore key suitable for the CRDT store from a FlowObject ID.
-// NOTE: The CRDT store manages its own internal namespacing within the base datastore.
-// This key is used directly with the CRDT store's Get/Put methods.
+// GenerateKeyFromObjectID creates a datastore key from a FlowObject's ObjectID (CID).
+// It uses the default datastore key transformation for CIDs.
 func GenerateKeyFromObjectID(id types.ObjectId) datastore.Key {
-	// Using the CID string directly as the key within the CRDT namespace.
-	// Ensure the key is valid for the datastore (e.g., non-empty).
 	if id == types.UndefObjectId {
-		// Handle or return error for undefined ID
-		return datastore.NewKey("") // Or return an error
+		// Return an empty key or handle as an error? Returning empty for now.
+		// Consider logging a warning here.
+		opLog.Warnf("Attempted to generate key for undefined ObjectId")
+		return datastore.Key{}
 	}
+	// CIDs can be directly converted to datastore Keys
 	return datastore.NewKey(id.String())
 }
 
-// SaveFlowObject serializes and saves a FlowObject to the CRDT datastore.
-// It takes the CRDT datastore instance directly.
-func SaveFlowObject(ctx context.Context, crdtStore *crdt.Datastore, obj *types.FlowObject) error {
+// flowObjectMetadata holds the non-CRDT state fields of a FlowObject.
+// This is serialized and stored in the base datastore.
+type flowObjectMetadata struct {
+	ID         types.ObjectId         `json:"id"`
+	ObjectType string                 `json:"objectType"`
+	Metadata   map[string]interface{} `json:"metadata"`
+	Sequence   uint64                 `json:"sequence"`
+}
+
+// SaveFlowObject persists a FlowObject by storing its state in the CRDT store
+// and its metadata in the base store.
+func SaveFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore datastore.Datastore, obj *types.FlowObject) error {
 	if obj == nil {
 		return fmt.Errorf("cannot save nil FlowObject")
 	}
 	if obj.ID == types.UndefObjectId {
-		// TODO: Decide how to handle ID generation if not pre-set.
-		// For now, assume ID is set before saving.
 		return fmt.Errorf("cannot save FlowObject with undefined ID")
 	}
 
@@ -45,28 +53,43 @@ func SaveFlowObject(ctx context.Context, crdtStore *crdt.Datastore, obj *types.F
 	}
 	opLog.Debugf("Saving FlowObject with key: %s", key)
 
-	// Serialize the entire object to JSON for this example.
-	// In a real scenario, you might only store the CRDT state or use a more
-	// efficient serialization format like CBOR or Protobuf.
-	valueBytes, err := json.Marshal(obj)
-	if err != nil {
-		return fmt.Errorf("failed to marshal FlowObject %s: %w", obj.ID, err)
+	// 1. Prepare and save metadata to baseStore
+	meta := flowObjectMetadata{
+		ID:         obj.ID,
+		ObjectType: obj.ObjectType,
+		Metadata:   obj.Metadata,
+		Sequence:   obj.Sequence,
 	}
 
-	// Put the serialized object into the CRDT store.
-	// go-ds-crdt handles the underlying CRDT logic and replication via the broadcaster.
-	err = crdtStore.Put(ctx, key, valueBytes)
+	metaBytes, err := json.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("failed to put FlowObject %s into CRDT store: %w", obj.ID, err)
+		return fmt.Errorf("failed to marshal metadata for FlowObject %s: %w", obj.ID, err)
 	}
 
-	opLog.Infof("Successfully saved FlowObject %s", obj.ID)
+	err = baseStore.Put(ctx, key, metaBytes)
+	if err != nil {
+		return fmt.Errorf("failed to put metadata for FlowObject %s into base store: %w", obj.ID, err)
+	}
+
+	// 2. Save state bytes to crdtStore ONLY if state is not nil
+	var stateLen int
+	if obj.State != nil {
+		err = crdtStore.Put(ctx, key, obj.State)
+		if err != nil {
+			// Attempt cleanup? For now, just error.
+			// Consider deleting the metadata key from baseStore here for consistency.
+			return fmt.Errorf("failed to put state for FlowObject %s into CRDT store: %w", obj.ID, err)
+		}
+		stateLen = len(obj.State)
+	}
+
+	opLog.Infof("Successfully saved FlowObject %s (State: %d bytes, Meta: %d bytes)", obj.ID, stateLen, len(metaBytes))
 	return nil
 }
 
-// LoadFlowObject retrieves and deserializes a FlowObject from the CRDT datastore by its ID.
-// It takes the CRDT datastore instance directly.
-func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, id types.ObjectId) (*types.FlowObject, error) {
+// LoadFlowObject retrieves a FlowObject by loading its state from the CRDT store
+// and its metadata from the base store.
+func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore datastore.Datastore, id types.ObjectId) (*types.FlowObject, error) {
 	if id == types.UndefObjectId {
 		return nil, fmt.Errorf("cannot load FlowObject with undefined ID")
 	}
@@ -77,29 +100,54 @@ func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, id types.Obj
 	}
 	opLog.Debugf("Loading FlowObject with key: %s", key)
 
-	// Get the serialized object from the CRDT store.
-	valueBytes, err := crdtStore.Get(ctx, key)
-	if err != nil {
-		if err == datastore.ErrNotFound {
-			opLog.Warnf("FlowObject %s not found in CRDT store", id)
-			return nil, err // Return specific error
-		}
-		return nil, fmt.Errorf("failed to get FlowObject %s from CRDT store: %w", id, err)
+	// 1. Load metadata from baseStore
+	metaBytes, err := baseStore.Get(ctx, key)
+	metaNotFound := errors.Is(err, datastore.ErrNotFound)
+	if err != nil && !metaNotFound {
+		return nil, fmt.Errorf("failed to get metadata for FlowObject %s from base store: %w", id, err)
 	}
 
-	// Deserialize the object from JSON.
-	var obj types.FlowObject
-	err = json.Unmarshal(valueBytes, &obj)
+	// 2. Load state from crdtStore
+	stateBytes, err := crdtStore.Get(ctx, key)
+	stateNotFound := errors.Is(err, datastore.ErrNotFound)
+	if err != nil && !stateNotFound {
+		return nil, fmt.Errorf("failed to get state for FlowObject %s from CRDT store: %w", id, err)
+	}
+
+	// Handle cases where one part is missing
+	if metaNotFound && stateNotFound {
+		opLog.Warnf("FlowObject %s not found in either base or CRDT store", id)
+		return nil, datastore.ErrNotFound // Consistent not found error
+	} else if metaNotFound {
+		// State exists but metadata doesn't - indicates inconsistency
+		return nil, fmt.Errorf("inconsistent FlowObject %s: state found in CRDT store but metadata missing from base store", id)
+	} else if stateNotFound {
+		// Metadata exists but state doesn't - might be valid if state can be empty/nil
+		opLog.Warnf("FlowObject %s state not found in CRDT store, but metadata exists. Returning object with nil state.", id)
+		stateBytes = nil // Explicitly set to nil
+	}
+
+	// 3. Deserialize metadata
+	var meta flowObjectMetadata
+	err = json.Unmarshal(metaBytes, &meta)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal FlowObject %s: %w", id, err)
+		return nil, fmt.Errorf("failed to unmarshal metadata for FlowObject %s: %w", id, err)
 	}
 
 	// Basic validation
-	if obj.ID != id {
-		// This might happen if the stored data is corrupted or represents a different object
-		return nil, fmt.Errorf("loaded object ID mismatch: expected %s, got %s", id, obj.ID)
+	if meta.ID != id {
+		return nil, fmt.Errorf("loaded metadata ID mismatch: expected %s, got %s", id, meta.ID)
 	}
 
-	opLog.Infof("Successfully loaded FlowObject %s", id)
-	return &obj, nil
+	// 4. Construct the FlowObject
+	obj := &types.FlowObject{
+		ID:         meta.ID,
+		ObjectType: meta.ObjectType,
+		Metadata:   meta.Metadata,
+		Sequence:   meta.Sequence,
+		State:      stateBytes, // Assign loaded state (could be nil if not found but meta was)
+	}
+
+	opLog.Infof("Successfully loaded FlowObject %s (State: %d bytes, Meta: %d bytes)", obj.ID, len(obj.State), len(metaBytes))
+	return obj, nil
 }
