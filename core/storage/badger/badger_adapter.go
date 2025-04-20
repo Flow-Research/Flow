@@ -1,311 +1,413 @@
 package badger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
-	storage "flow-network/flow/core/storage"     // Import the interface package
-	types "flow-network/flow/core/storage/types" // Import the types package
+	storage "flow-network/flow/core/storage"     // Interface
+	types "flow-network/flow/core/storage/types" // Types
 
-	"github.com/dgraph-io/badger/v4"
-	"github.com/ipfs/go-cid"
+	badgerds "github.com/ipfs/go-ds-badger" // Use go-ds-badger
+	datastore "github.com/ipfs/go-datastore"
+	query "github.com/ipfs/go-datastore/query"
+	logging "github.com/ipfs/go-log/v2"
+	cid "github.com/ipfs/go-cid"
 	mh "github.com/multiformats/go-multihash"
 )
 
-// BadgerOptions holds configuration settings for BadgerDB.
+var log = logging.Logger("flow/storage/badger") // Setup logger
+
+// --- Constants for Key Prefixes ---
+const (
+	metadataPrefix = "/meta/"
+	statePrefix    = "/state/"
+	deltaLogPrefix = "/dlog/"
+	snapshotPrefix = "/snap/"
+)
+
+// --- Metadata Structure ---
+
+// objectMetadata holds the non-state information about a FlowObject.
+type objectMetadata struct {
+	ID         types.ObjectId         `json:"id"`
+	ObjectType string                 `json:"object_type"`
+	Metadata   map[string]interface{} `json:"metadata"`
+	Sequence   uint64                 `json:"sequence"`
+}
+
+// --- Adapter Structure ---
+
+// BadgerOptions holds configuration settings for BadgerDB datastore.
 // Exported to allow configuration from outside the package.
 type BadgerOptions struct {
 	Path string
 }
 
-// BadgerAdapter implements the StorageAdapter interface using BadgerDB.
+// BadgerAdapter implements the StorageAdapter interface using go-ds-badger.
 type BadgerAdapter struct {
-	db *badger.DB
+	ds datastore.Batching // Use the datastore interface
 }
 
 // Compile-time check to ensure BadgerAdapter implements StorageAdapter
 var _ storage.StorageAdapter = (*BadgerAdapter)(nil)
 
-// NewBadgerAdapter creates a new BadgerDB storage adapter.
+// NewBadgerAdapter creates a new BadgerDB storage adapter using go-ds-badger.
 func NewBadgerAdapter(options BadgerOptions) (*BadgerAdapter, error) {
-	opts := badger.DefaultOptions(options.Path)
-
-	db, err := badger.Open(opts)
+	// Configure Badger datastore options (can customize more if needed)
+	// See go-ds-badger documentation for available options
+	// Using DefaultOptions here for simplicity.
+	dsOpts := badgerds.DefaultOptions
+	ds, err := badgerds.NewDatastore(options.Path, &dsOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open badger database at %s: %w", options.Path, err)
+		return nil, fmt.Errorf("failed to create badger datastore at %s: %w", options.Path, err)
 	}
-	return &BadgerAdapter{db: db}, nil
+
+	log.Infof("Badger datastore opened at %s", options.Path)
+	return &BadgerAdapter{ds: ds}, nil
 }
 
-// Close closes the BadgerDB database connection.
+// Close closes the underlying Badger datastore.
 func (adapter *BadgerAdapter) Close() error {
-	return adapter.db.Close()
+	if adapter.ds == nil {
+		return nil // Already closed or never opened
+	}
+	err := adapter.ds.Close()
+	adapter.ds = nil // Prevent further use
+	if err != nil {
+		log.Errorf("Error closing badger datastore: %v", err)
+		return fmt.Errorf("failed to close badger datastore: %w", err)
+	}
+	log.Info("Badger datastore closed")
+	return nil
 }
 
-// --- Key Generation Helpers ---
+// --- Key Helper Functions (using datastore.Key) ---
 
-const (
-	objectPrefix = "obj/"
-	deltaPrefix  = "delta/"
-	snapPrefix   = "snap/"
-)
-
-// objectKey generates the BadgerDB key for a FlowObject.
-func objectKey(id types.ObjectId) []byte {
-	return []byte(objectPrefix + id.String())
+func objectMetaKey(id types.ObjectId) datastore.Key {
+	return datastore.NewKey(metadataPrefix + id.String())
 }
 
-// deltaKey generates the BadgerDB key for a Delta, including sequence number.
-func deltaKey(id types.ObjectId, sequence uint64) []byte {
-	return []byte(fmt.Sprintf("%s%s/%020d", deltaPrefix, id.String(), sequence))
+func objectStateKey(id types.ObjectId) datastore.Key {
+	return datastore.NewKey(statePrefix + id.String())
 }
 
-// snapshotKey generates the BadgerDB key for a Snapshot.
-func snapshotKey(id types.SnapshotId) []byte {
-	return []byte(snapPrefix + id.String())
+func deltaLogKey(id types.ObjectId, sequence uint64) datastore.Key {
+	// Ensure sequence is padded for correct lexicographical sorting
+	return datastore.NewKey(fmt.Sprintf("%s%s/%020d", deltaLogPrefix, id.String(), sequence))
 }
 
-// --- StorageAdapter Implementation ---
+func deltaLogPrefixKey(id types.ObjectId) datastore.Key {
+	return datastore.NewKey(fmt.Sprintf("%s%s/", deltaLogPrefix, id.String()))
+}
 
-// CreateObject stores a new FlowObject and its initial state.
+func snapshotMetaKey(id types.SnapshotId) datastore.Key {
+	return datastore.NewKey(snapshotPrefix + id.String() + "/meta")
+}
+
+func snapshotStateKey(id types.SnapshotId) datastore.Key {
+	return datastore.NewKey(snapshotPrefix + id.String() + "/state")
+}
+
+// --- StorageAdapter Implementation (using Datastore) ---
+
+// CreateObject initializes a new FlowObject, storing its metadata and initial state.
 func (adapter *BadgerAdapter) CreateObject(objectType string, metadata map[string]interface{}, initialState []byte) (types.ObjectId, error) {
-	obj := types.FlowObject{
-		ObjectType: objectType,
-		Metadata:   metadata,
-		CRDTState:  initialState,
-		Sequence:   0, // Initial sequence
-	}
+	ctx := context.Background()
 
-	// Generate deterministic CID based on initial content (consider adding type/metadata?)
-	pref := cid.Prefix{
-		Version:  1,
-		Codec:    cid.Raw, // Using raw codec for the initial state bytes
-		MhType:   mh.SHA2_256,
-		MhLength: -1, // Default length
-	}
-	objCid, err := pref.Sum(initialState) // Use initial state for ID
+	// Generate object ID based on type and initial state
+	pref := cid.Prefix{MhType: mh.SHA2_256, MhLength: -1, Version: 1, Codec: cid.Raw}
+	hashBytes := append([]byte(objectType), initialState...)
+	hashedCid, err := pref.Sum(hashBytes)
 	if err != nil {
 		return types.UndefObjectId, fmt.Errorf("failed to generate object CID: %w", err)
 	}
-	obj.ID = objCid
+	objId := types.ObjectId(hashedCid)
 
-	objBytes, err := json.Marshal(obj)
+	// Prepare metadata
+	metaData := objectMetadata{
+		ID:         objId,
+		ObjectType: objectType,
+		Metadata:   metadata,
+		Sequence:   0, // Initial sequence
+	}
+	metaBytes, err := json.Marshal(metaData)
 	if err != nil {
-		return types.UndefObjectId, fmt.Errorf("failed to marshal object: %w", err)
+		return types.UndefObjectId, fmt.Errorf("failed to marshal object metadata: %w", err)
 	}
 
-	err = adapter.db.Update(func(txn *badger.Txn) error {
-		key := objectKey(obj.ID)
-		return txn.Set(key, objBytes)
-	})
-
+	// Use a batch write for atomicity (metadata + initial state)
+	batch, err := adapter.ds.Batch(ctx)
 	if err != nil {
-		return types.UndefObjectId, fmt.Errorf("failed to save object to badger: %w", err)
+		return types.UndefObjectId, fmt.Errorf("failed to start batch for create object: %w", err)
 	}
 
-	return obj.ID, nil
+	metaKey := objectMetaKey(objId)
+	if err = batch.Put(ctx, metaKey, metaBytes); err != nil {
+		return types.UndefObjectId, fmt.Errorf("failed to put metadata in batch: %w", err)
+	}
+
+	stateKey := objectStateKey(objId)
+	if err = batch.Put(ctx, stateKey, initialState); err != nil {
+		return types.UndefObjectId, fmt.Errorf("failed to put initial state in batch: %w", err)
+	}
+
+	if err = batch.Commit(ctx); err != nil {
+		return types.UndefObjectId, fmt.Errorf("failed to commit create object batch: %w", err)
+	}
+
+	log.Debugf("Created object %s of type %s", objId, objectType)
+	return objId, nil
 }
 
-// LoadObject retrieves a FlowObject by its ID.
+// LoadObject retrieves a FlowObject by its ID, including its latest state.
 func (adapter *BadgerAdapter) LoadObject(id types.ObjectId) (*types.FlowObject, error) {
-	var obj types.FlowObject
-	err := adapter.db.View(func(txn *badger.Txn) error {
-		key := objectKey(id)
-		item, err := txn.Get(key)
-		if err != nil {
-			// Handle not found specifically if needed
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("object with id %s not found: %w", id.String(), err)
-			}
-			return fmt.Errorf("failed to get object %s: %w", id.String(), err)
-		}
+	ctx := context.Background()
+	metaKey := objectMetaKey(id)
+	stateKey := objectStateKey(id)
 
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &obj)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal object %s: %w", id.String(), err)
-		}
-		return nil
-	})
-
+	// Load metadata
+	metaBytes, err := adapter.ds.Get(ctx, metaKey)
 	if err != nil {
-		return nil, err // Error already contains context
+		if err == datastore.ErrNotFound {
+			return nil, fmt.Errorf("object metadata not found for ID %s: %w", id, datastore.ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to load object metadata: %w", err)
+	}
+	var metaData objectMetadata
+	if err := json.Unmarshal(metaBytes, &metaData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal object metadata: %w", err)
 	}
 
-	return &obj, nil
-}
-
-// ApplyDelta applies a change (Delta) to a specific FlowObject.
-// It handles storing the delta and potentially updating the object's main state based on CRDT logic.
-// TODO: Implement actual CRDT merge logic here.
-// TODO: How to handle potential conflicts / concurrent deltas?
-// TODO: How to efficiently update the main object state vs just storing deltas?
-func (ba *BadgerAdapter) ApplyDelta(id types.ObjectId, delta *types.Delta) error {
-	// Validate delta
-	if delta == nil {
-		return fmt.Errorf("cannot apply nil delta")
+	// Load state
+	stateBytes, err := adapter.ds.Get(ctx, stateKey)
+	if err != nil {
+		if err == datastore.ErrNotFound {
+			// Should not happen if metadata exists, indicates inconsistency
+			log.Errorf("State missing for object %s where metadata exists", id)
+			return nil, fmt.Errorf("state data inconsistency for ID %s: %w", id, datastore.ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to load object state: %w", err)
 	}
 
-	return ba.db.Update(func(txn *badger.Txn) error {
-		// 1. Load the current object state
-		key := objectKey(id)
-		item, err := txn.Get(key)
-		if err != nil {
-			return fmt.Errorf("failed to get object %s for applying delta: %w", id.String(), err)
-		}
+	// Populate the FlowObject
+	flowObj := &types.FlowObject{
+		ID:         metaData.ID,
+		ObjectType: metaData.ObjectType,
+		Metadata:   metaData.Metadata,
+		Sequence:   metaData.Sequence,
+		State:      stateBytes, // Use the generic 'State' field
+	}
 
-		var currentObj types.FlowObject
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &currentObj)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal object %s for delta: %w", id.String(), err)
-		}
-
-		// 2. Apply CRDT logic (placeholder: overwrite state)
-		// In a real scenario, this would involve merging delta.Payload with currentObj.CRDTState
-		// based on the specific CRDT rules.
-		newSequence := currentObj.Sequence + 1
-		newState := delta.Payload // Placeholder - just replace
-
-		// 3. Store the delta itself, keyed by sequence number
-		deltaBytes, err := json.Marshal(delta)
-		if err != nil {
-			return fmt.Errorf("failed to marshal delta for object %s: %w", id.String(), err)
-		}
-		dKey := deltaKey(id, newSequence)
-		if err := txn.Set(dKey, deltaBytes); err != nil {
-			return fmt.Errorf("failed to save delta %d for object %s: %w", newSequence, id.String(), err)
-		}
-
-		// 4. Update the object with the new state and sequence number
-		currentObj.CRDTState = newState
-		currentObj.Sequence = newSequence
-		newObjBytes, err := json.Marshal(currentObj)
-		if err != nil {
-			return fmt.Errorf("failed to marshal updated object %s: %w", id.String(), err)
-		}
-		if err := txn.Set(key, newObjBytes); err != nil {
-			return fmt.Errorf("failed to save updated object %s: %w", id.String(), err)
-		}
-
-		return nil
-	})
+	log.Debugf("Loaded object %s", flowObj.ID)
+	return flowObj, nil
 }
 
-// GetHistory retrieves the list of deltas applied to a FlowObject.
+// ApplyDelta updates an object's state, increments its sequence, and logs the delta.
+func (adapter *BadgerAdapter) ApplyDelta(id types.ObjectId, delta *types.Delta) error {
+	ctx := context.Background()
+	metaKey := objectMetaKey(id)
+	stateKey := objectStateKey(id)
+
+	// 1. Load current metadata to get the current sequence number
+	metaBytes, err := adapter.ds.Get(ctx, metaKey)
+	if err != nil {
+		if err == datastore.ErrNotFound {
+			return fmt.Errorf("cannot apply delta, object not found for ID %s: %w", id, datastore.ErrNotFound)
+		}
+		return fmt.Errorf("failed to load object metadata for delta: %w", err)
+	}
+	var metaData objectMetadata
+	if err := json.Unmarshal(metaBytes, &metaData); err != nil {
+		return fmt.Errorf("failed to unmarshal object metadata for delta: %w", err)
+	}
+
+	// 2. Prepare updated metadata and delta log entry
+	newSequence := metaData.Sequence + 1
+	metaData.Sequence = newSequence // Increment sequence
+	updatedMetaBytes, err := json.Marshal(metaData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated metadata: %w", err)
+	}
+
+	historyKey := deltaLogKey(id, newSequence)
+	deltaBytes, err := json.Marshal(delta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delta for history log: %w", err)
+	}
+
+	// 3. Use a batch write for atomicity (metadata + state + history log)
+	batch, err := adapter.ds.Batch(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start batch for apply delta: %w", err)
+	}
+
+	// Put updated metadata
+	if err = batch.Put(ctx, metaKey, updatedMetaBytes); err != nil {
+		return fmt.Errorf("failed to put updated metadata in batch: %w", err)
+	}
+
+	// Put new state (overwrite with delta payload)
+	if err = batch.Put(ctx, stateKey, delta.Payload); err != nil {
+		return fmt.Errorf("failed to put new state in batch: %w", err)
+	}
+
+	// Put delta log entry
+	if err = batch.Put(ctx, historyKey, deltaBytes); err != nil {
+		return fmt.Errorf("failed to put delta log entry in batch: %w", err)
+	}
+
+	// Commit the atomic batch
+	if err = batch.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit apply delta batch: %w", err)
+	}
+
+	log.Debugf("Applied delta to object %s, new sequence %d", id, newSequence)
+	return nil
+}
+
+// GetHistory retrieves the sequence of deltas applied to an object.
 func (adapter *BadgerAdapter) GetHistory(id types.ObjectId) ([]types.Delta, error) {
-	var history []types.Delta
-	err := adapter.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = []byte(fmt.Sprintf("%s%s/", deltaPrefix, id.String()))
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	ctx := context.Background()
+	prefix := deltaLogPrefixKey(id)
 
-		for it.Rewind(); it.Valid(); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var delta types.Delta
-				if err := json.Unmarshal(val, &delta); err != nil {
-					// Log or handle unmarshaling error for a specific delta?
-					log.Printf("Warning: Failed to unmarshal delta for key %s: %v", string(item.Key()), err)
-					return nil // Skip this delta, continue with others
-				}
-				history = append(history, delta)
-				return nil
-			})
-			if err != nil {
-				return fmt.Errorf("failed reading value for delta key %s: %w", string(item.Key()), err)
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve history for object %s: %w", id.String(), err)
+	q := query.Query{
+		Prefix: prefix.String(),
+		Orders: []query.Order{query.OrderByKey{}}, // Order by sequence number (encoded in key)
 	}
 
+	results, err := adapter.ds.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query delta history for ID %s: %w", id, err)
+	}
+	defer results.Close()
+
+	var history []types.Delta
+	for result := range results.Next() {
+		if result.Error != nil {
+			return nil, fmt.Errorf("error iterating delta history results for ID %s: %w", id, result.Error)
+		}
+
+		var delta types.Delta
+		if err := json.Unmarshal(result.Value, &delta); err != nil {
+			log.Errorf("Failed to unmarshal delta from history log (ID: %s, Key: %s): %v", id, result.Key, err)
+			continue // Skip corrupted entry
+		}
+		history = append(history, delta)
+	}
+
+	log.Debugf("Retrieved %d history entries for object %s", len(history), id)
 	return history, nil
 }
 
-// CreateSnapshot stores the current state of a FlowObject as a snapshot.
+// CreateSnapshot stores the current state of an object.
 func (adapter *BadgerAdapter) CreateSnapshot(id types.ObjectId) (types.SnapshotId, error) {
-	var snapshot types.FlowObject
-	var snapshotCid types.SnapshotId
+	ctx := context.Background()
+	objMetaKey := objectMetaKey(id)
+	objStateKey := objectStateKey(id)
 
-	err := adapter.db.Update(func(txn *badger.Txn) error {
-		// 1. Load the current object state
-		objKey := objectKey(id)
-		item, err := txn.Get(objKey)
-		if err != nil {
-			return fmt.Errorf("failed to get object %s for snapshotting: %w", id.String(), err)
-		}
-
-		var objBytes []byte
-		err = item.Value(func(val []byte) error {
-			objBytes = append([]byte{}, val...)   // Important: Copy the value!
-			return json.Unmarshal(val, &snapshot) // Unmarshal to get fields if needed
-		})
-		if err != nil {
-			return fmt.Errorf("failed to read/unmarshal object %s for snapshot: %w", id.String(), err)
-		}
-
-		// 2. Generate snapshot ID (CID of the *entire* marshaled object state at this point)
-		pref := cid.Prefix{
-			Version:  1,
-			Codec:    cid.DagJSON, // Use DagJSON as we're storing the marshaled JSON
-			MhType:   mh.SHA2_256,
-			MhLength: -1,
-		}
-		snapCid, err := pref.Sum(objBytes)
-		if err != nil {
-			return fmt.Errorf("failed to generate snapshot CID for object %s: %w", id.String(), err)
-		}
-		snapshotCid = snapCid // Assign to outer scope variable
-
-		// 3. Store the snapshot data using the snapshot key
-		snapKey := snapshotKey(snapshotCid)
-		if err := txn.Set(snapKey, objBytes); err != nil {
-			return fmt.Errorf("failed to save snapshot %s for object %s: %w", snapshotCid.String(), id.String(), err)
-		}
-
-		return nil
-	})
-
+	// 1. Load current metadata
+	metaBytes, err := adapter.ds.Get(ctx, objMetaKey)
 	if err != nil {
-		return types.UndefSnapshotId, err
+		if err == datastore.ErrNotFound {
+			return types.UndefSnapshotId, fmt.Errorf("cannot snapshot, object not found %s: %w", id, datastore.ErrNotFound)
+		}
+		return types.UndefSnapshotId, fmt.Errorf("failed to load object metadata for snapshot: %w", err)
+	}
+	var currentMeta objectMetadata
+	if err := json.Unmarshal(metaBytes, &currentMeta); err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to unmarshal object metadata for snapshot: %w", err)
 	}
 
-	return snapshotCid, nil
+	// 2. Load current state
+	currentStateBytes, err := adapter.ds.Get(ctx, objStateKey)
+	if err != nil {
+		if err == datastore.ErrNotFound {
+			log.Errorf("State missing for object %s during snapshot where metadata exists", id)
+			return types.UndefSnapshotId, fmt.Errorf("state data inconsistency for snapshot on ID %s", id)
+		}
+		return types.UndefSnapshotId, fmt.Errorf("failed to load object state for snapshot: %w", err)
+	}
+
+	// 3. Prepare snapshot metadata (using the same struct)
+	snapshotMeta := currentMeta // Copy current metadata
+	snapMetaBytes, err := json.Marshal(snapshotMeta)
+	if err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to marshal snapshot metadata: %w", err)
+	}
+
+	// 4. Generate snapshot ID (hash of meta + state)
+	hashInput := append(snapMetaBytes, currentStateBytes...)
+	pref := cid.Prefix{MhType: mh.SHA2_256, MhLength: -1, Version: 1, Codec: cid.Raw}
+	snapshotCid, err := pref.Sum(hashInput)
+	if err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to generate snapshot CID: %w", err)
+	}
+	snapId := types.SnapshotId(snapshotCid)
+
+	// 5. Store snapshot atomically (metadata + state)
+	snapMetaKey := snapshotMetaKey(snapId)
+	snapStateKey := snapshotStateKey(snapId)
+
+	batch, err := adapter.ds.Batch(ctx)
+	if err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to start batch for create snapshot: %w", err)
+	}
+
+	if err = batch.Put(ctx, snapMetaKey, snapMetaBytes); err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to put snapshot metadata in batch: %w", err)
+	}
+
+	if err = batch.Put(ctx, snapStateKey, currentStateBytes); err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to put snapshot state in batch: %w", err)
+	}
+
+	if err = batch.Commit(ctx); err != nil {
+		return types.UndefSnapshotId, fmt.Errorf("failed to commit create snapshot batch: %w", err)
+	}
+
+	log.Debugf("Created snapshot %s for object %s", snapId, id)
+	return snapId, nil
 }
 
-// LoadSnapshot retrieves a FlowObject snapshot by its Snapshot ID.
+// LoadSnapshot retrieves a previously created object snapshot.
 func (adapter *BadgerAdapter) LoadSnapshot(id types.SnapshotId) (*types.FlowObject, error) {
-	var obj types.FlowObject
-	err := adapter.db.View(func(txn *badger.Txn) error {
-		key := snapshotKey(id)
-		item, err := txn.Get(key)
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("snapshot with id %s not found: %w", id.String(), err)
-			}
-			return fmt.Errorf("failed to get snapshot %s: %w", id.String(), err)
-		}
+	ctx := context.Background()
+	snapMetaKey := snapshotMetaKey(id)
+	snapStateKey := snapshotStateKey(id)
 
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &obj)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal snapshot %s: %w", id.String(), err)
-		}
-		return nil
-	})
-
+	// Load snapshot metadata
+	metaBytes, err := adapter.ds.Get(ctx, snapMetaKey)
 	if err != nil {
-		return nil, err
+		if err == datastore.ErrNotFound {
+			return nil, fmt.Errorf("snapshot metadata not found for ID %s: %w", id, datastore.ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to load snapshot metadata: %w", err)
+	}
+	var metaData objectMetadata
+	if err := json.Unmarshal(metaBytes, &metaData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal snapshot metadata: %w", err)
 	}
 
-	return &obj, nil
+	// Load snapshot state
+	stateBytes, err := adapter.ds.Get(ctx, snapStateKey)
+	if err != nil {
+		if err == datastore.ErrNotFound {
+			log.Errorf("Snapshot state missing for ID %s where metadata exists", id)
+			return nil, fmt.Errorf("snapshot state inconsistency for ID %s: %w", id, datastore.ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to load snapshot state: %w", err)
+	}
+
+	// Reconstruct the FlowObject
+	flowObj := &types.FlowObject{
+		ID:         metaData.ID,       // ID of the original object from snapshot meta
+		ObjectType: metaData.ObjectType,
+		Metadata:   metaData.Metadata,
+		Sequence:   metaData.Sequence, // Sequence at the time of snapshot
+		State:      stateBytes,     // State from the snapshot
+	}
+
+	log.Debugf("Loaded snapshot %s (Original Object: %s)", id, metaData.ID)
+	return flowObj, nil
 }

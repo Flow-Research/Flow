@@ -62,7 +62,7 @@ func TestCreateLoadObject(t *testing.T) {
 	// The loaded object should reflect the state at creation time
 	assert.Equal(t, objectType, loadedObj.ObjectType, "Loaded object type should match")
 	assert.Equal(t, metadata, loadedObj.Metadata, "Loaded object metadata should match")
-	assert.Equal(t, initialState, loadedObj.CRDTState, "Loaded object state should match initial state")
+	assert.Equal(t, initialState, loadedObj.State, "Loaded object state should match initial state")
 	assert.Equal(t, uint64(0), loadedObj.Sequence, "Newly created object sequence should be 0")
 
 }
@@ -91,7 +91,7 @@ func TestApplyDeltaAndHistory(t *testing.T) {
 	loadedObj1, err := adapter.LoadObject(objId)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), loadedObj1.Sequence, "Sequence should be 1 after delta 1")
-	assert.Equal(t, delta1.Payload, loadedObj1.CRDTState, "State should match delta 1 payload (simulated)")
+	assert.Equal(t, delta1.Payload, loadedObj1.State, "State should match delta 1 payload (simulated)")
 
 	// --- Delta 2 ---
 	delta2 := &types.Delta{
@@ -106,7 +106,7 @@ func TestApplyDeltaAndHistory(t *testing.T) {
 	loadedObj2, err := adapter.LoadObject(objId)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), loadedObj2.Sequence, "Sequence should be 2 after delta 2")
-	assert.Equal(t, delta2.Payload, loadedObj2.CRDTState, "State should match delta 2 payload (simulated)")
+	assert.Equal(t, delta2.Payload, loadedObj2.State, "State should match delta 2 payload (simulated)")
 
 	// --- Get History ---
 	history, err := adapter.GetHistory(objId)
@@ -169,14 +169,12 @@ func TestCreateLoadSnapshot(t *testing.T) {
 	assert.Equal(t, expectedObj.ID, loadedSnapshot.ID, "Snapshot object ID should match original object ID")
 	assert.Equal(t, expectedObj.ObjectType, loadedSnapshot.ObjectType, "Snapshot object type should match")
 	assert.Equal(t, expectedObj.Metadata, loadedSnapshot.Metadata, "Snapshot metadata should match")
-	assert.Equal(t, expectedObj.CRDTState, loadedSnapshot.CRDTState, "Snapshot CRDT state should match state at snapshot time")
+	assert.Equal(t, expectedObj.State, loadedSnapshot.State, "Snapshot state should match state at snapshot time")
 	assert.Equal(t, expectedObj.Sequence, loadedSnapshot.Sequence, "Snapshot sequence should match sequence at snapshot time")
 
 	// --- Verify Current Object State (Optional, ensure snapshot didn't change live object) ---
 	currentObj, err := adapter.LoadObject(objId)
 	require.NoError(t, err)
-	assert.Equal(t, expectedObj.CRDTState, currentObj.CRDTState, "Current object state should remain unchanged after snapshot")
+	assert.Equal(t, expectedObj.State, currentObj.State, "Current object state should remain unchanged after snapshot")
 	assert.Equal(t, expectedObj.Sequence, currentObj.Sequence, "Current object sequence should remain unchanged after snapshot")
 }
-
-// TODO: Add tests for CreateSnapshot, LoadSnapshot

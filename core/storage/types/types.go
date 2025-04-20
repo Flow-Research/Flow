@@ -32,6 +32,6 @@ type FlowObject struct {
 	ID         ObjectId               `json:"id"`         // Unique identifier (CID) of the object's initial state or definition
 	ObjectType string                 `json:"object_type"` // String identifier for the type of object (e.g., "document", "task", "schema:person")
 	Metadata   map[string]interface{} `json:"metadata"`   // Flexible key-value metadata (can be JSON-like)
-	CRDTState  []byte                 `json:"crdt_state"` // The current serialized state of the underlying CRDT
+	State      []byte                 `json:"state"`      // The current serialized state of the underlying CRDT
 	Sequence   uint64                 `json:"sequence"`   // Monotonically increasing sequence number for ordering deltas
 }
