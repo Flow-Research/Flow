@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"flow-network/flow/core/storage/types"
+	"flow-network/flow/core/types"
 
 	crdt "github.com/ipfs/go-ds-crdt"
 	datastore "github.com/ipfs/go-datastore"
