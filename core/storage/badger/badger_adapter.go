@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	storage "flow-network/flow/core/storage"         // Import the interface package
+	storage "flow-network/flow/core/storage"     // Import the interface package
 	types "flow-network/flow/core/storage/types" // Import the types package
 
 	"github.com/dgraph-io/badger/v4"
@@ -30,8 +30,6 @@ var _ storage.StorageAdapter = (*BadgerAdapter)(nil)
 // NewBadgerAdapter creates a new BadgerDB storage adapter.
 func NewBadgerAdapter(options BadgerOptions) (*BadgerAdapter, error) {
 	opts := badger.DefaultOptions(options.Path)
-	// Disable Badger's internal logger unless debugging
-	opts.Logger = nil // Or replace with a proper logger if needed
 
 	db, err := badger.Open(opts)
 	if err != nil {
@@ -247,7 +245,7 @@ func (adapter *BadgerAdapter) CreateSnapshot(id types.ObjectId) (types.SnapshotI
 
 		var objBytes []byte
 		err = item.Value(func(val []byte) error {
-			objBytes = append([]byte{}, val...) // Important: Copy the value!
+			objBytes = append([]byte{}, val...)   // Important: Copy the value!
 			return json.Unmarshal(val, &snapshot) // Unmarshal to get fields if needed
 		})
 		if err != nil {
