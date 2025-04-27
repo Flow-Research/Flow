@@ -8,8 +8,8 @@ import (
 
 	"flow-network/flow/core/types"
 
-	crdt "github.com/ipfs/go-ds-crdt"
 	datastore "github.com/ipfs/go-datastore"
+	crdt "github.com/ipfs/go-ds-crdt"
 	logging "github.com/ipfs/go-log/v2"
 )
 
@@ -155,7 +155,7 @@ func LoadFlowObject(ctx context.Context, crdtStore *crdt.Datastore, baseStore da
 		ObjectType: meta.ObjectType,
 		Metadata:   meta.Metadata,
 		Sequence:   meta.Sequence,
-		State:      stateBytes, // Assign loaded state (now correctly []byte{} or nil)
+		State:      stateBytes, // Assign loaded state
 	}
 
 	opLog.Infof("Successfully loaded FlowObject %s (State: %d bytes, Meta: %d bytes)", obj.ID, len(obj.State), len(metaBytes))
