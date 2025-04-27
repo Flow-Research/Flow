@@ -1,3 +1,5 @@
+# Gitignore Configuration
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -40,3 +42,220 @@ Thumbs.db
 badger_test_*
 
 # Add other project-specific ignores below
+
+# Operating System Files
+# ======================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.TemporaryItems
+.fseventsd
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# IDEs and Editors
+# ================
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains (.idea)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*.[^.]*.un~
+Session.vim
+
+# Build Tools & Dependencies
+# ==========================
+
+**/node_modules/
+**/bower_components/
+**/jspm_packages/
+**/dist/
+**/build/
+**/target/
+**/out/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Python
+# =======
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.env.*
+!.env.example
+.venv
+venv/
+env/
+ENV/
+lib/
+lib64/
+include/
+share/python-wheels/
+
+# Distribution / packaging
+*.egg-info/
+.eggs/
+*.egg
+*.manifest
+*.spec
+dist/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Mypy cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff cache
+.ruff_cache/
+
+# TypeStub generator
+out/
+
+# Logs & Temporary Files
+# ======================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+*.tmp
+*.temp
+
+# Data Files
+# ===========
+*.csv
+*.dat
+*.pkl
+*.pickle
+*.sqlite
+*.db
+
+# Consider adding specific data file patterns if needed
+
+# Secrets & Sensitive Info
+# ==========================
+*.key
+*.pem
+*.cer
+*.p12
+*.pfx
+*.asc
+secrets.yml
+secrets.json
+*.env
+.env.*
+!.env.example
+config.py  # If it contains secrets
+settings.py # If it contains secrets
+credentials*
+
+# Compiled Output
+# =================
+*.dll
+*.exe
+*.o
+*.a
+*.obj
+*.so
+*.dylib
+*.class
+
+# Cloud Specific Files
+# ====================
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.*.log
+.serverless/
+
+# Compressed Files
+# =================
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Generated Documentation
+# =======================
+_build/
+doc/_build/
+
+# Miscellaneous
+# =============
+.cache/
+.project
+.settings/
+*.bak
+*~
