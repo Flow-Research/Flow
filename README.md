@@ -15,16 +15,16 @@ Flow is a decentralized coordination platform enabling agents and users to co-cr
 
 ## Layered Architecture
 
-1.  [**Storage Layer**](./01_storage_layer.md) (Local-first CRDT, Any-Sync, Storacha/IPFS)
-2.  [**Access & Auth Layer**](./02_access_auth_layer.md) (DIDs + UCANs, trust graphs)
-3.  [**Network Layer**](./03_network_layer.md) (network discovery, P2P messaging, UCAN-auth, transport-agnostic)
-4.  [**Coordination & Sync Layer**](./04_coordination_sync_layer.md) (CRDT + DAG state, multi-agent sync)
-5.  [**Knowledge Graph & MCP Layer**](./05_knowledge_graph_mcp.md) (Schema-bound DAG nodes, Model Context Protocol)
-6.  [**User Interface / UX Layer**](./06_ui_ux_layer.md) (User interface for interacting with the Knowledge graph)
-7.  [**Agent Layer**](./07_agent_layer.md) (SLRPA lifecycle, explainable)
-8.  [**Execution Layer**](./08_execution_layer.md) (DAG workflows, signed transitions)
-9.  [**Compute Layer**](./09_compute_layer.md) (Runners, Bacalhau, zkML/zkPoE)
-10. [**Incentive Layer**](./10_incentive_layer.md) (Programmable rewards, contribution tracking)
+1.  [**Storage Layer**](./specs/01_storage_layer.md) (Local-first CRDT, Any-Sync, Storacha/IPFS)
+2.  [**Access & Auth Layer**](./specs/02_access_auth_layer.md) (DIDs + UCANs, trust graphs)
+3.  [**Network Layer**](./specs/03_network_layer.md) (network discovery, P2P messaging, UCAN-auth, transport-agnostic)
+4.  [**Coordination & Sync Layer**](./specs/04_coordination_sync_layer.md) (CRDT + DAG state, multi-agent sync)
+5.  [**Knowledge Graph & MCP Layer**](./specs/05_knowledge_graph_mcp.md) (Schema-bound DAG nodes, Model Context Protocol)
+6.  [**User Interface / UX Layer**](./specs/06_ui_ux_layer.md) (User interface for interacting with the Knowledge graph)
+7.  [**Agent Layer**](./specs/07_agent_layer.md) (SLRPA lifecycle, explainable)
+8.  [**Execution Layer**](./specs/08_execution_layer.md) (DAG workflows, signed transitions)
+9.  [**Compute Layer**](./specs/09_compute_layer.md) (Runners, Bacalhau, zkML/zkPoE)
+10. [**Incentive Layer**](./specs/10_incentive_layer.md) (Programmable rewards, contribution tracking)
 
 
 ## Flow of Activity
