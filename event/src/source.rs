@@ -1,44 +1,56 @@
-use std::error::Error;
+use std::{error::Error, sync::{Arc, RwLock}};
 
 use crate::types::Event;
 
 
-pub trait EventListener {
+pub trait EventListener: Send + Sync {
     fn handle(&self, event: &Event) -> Result<(), Box<dyn Error>>;
 }
 
 
-#[derive(Default)]
+#[derive(Clone)]
 pub struct EventListenerManager {
-    listeners: Vec<Box<dyn EventListener>>,
+    listeners: Arc<RwLock<Vec<Arc<dyn EventListener>>>>,
 }
 
 
 impl EventListenerManager {
     
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            listeners: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 
-    pub fn subscribe(&mut self, listener: Box<dyn EventListener>) {
-        self.listeners.push(listener);
+    pub fn subscribe(&mut self, listener: Arc<dyn EventListener>) {
+        let mut listeners = self.listeners.write().unwrap();
+        listeners.push(listener);
     }
 
     pub fn publish(&self, event: &Event) -> Result<(), Box<dyn Error>> {
-        for listener in &self.listeners {
+        let listeners = self.listeners.read().unwrap();
+        for listener in listeners.iter() {
             listener.handle(event)?;
         }
         Ok(())
     }
 
     pub fn listener_count(&self) -> usize {
-        self.listeners.len()
+        self.listeners.read().unwrap().len()
     }
 
     pub fn unsubscribe_all(&mut self) {
-        self.listeners.clear();
+        let mut listeners = self.listeners.write().unwrap();
+        listeners.clear();
     }
 
+}
+
+
+impl Default for EventListenerManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 
@@ -48,7 +60,7 @@ pub trait EventSource {
 
     fn event_manager_mut(&mut self) -> &mut EventListenerManager;
 
-    fn subscribe(&mut self, listener: Box<dyn EventListener>) {
+    fn subscribe(&mut self, listener: Arc<dyn EventListener>) {
         self.event_manager_mut().subscribe(listener);
     }
 
