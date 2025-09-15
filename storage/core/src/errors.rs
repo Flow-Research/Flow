@@ -1,7 +1,6 @@
+use crate::types::QueryTarget;
 use errors::AppError;
 use thiserror::Error;
-use crate::types::QueryTarget; 
-
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -10,7 +9,7 @@ pub enum StorageError {
 
     #[error("Database query failed: {0}")]
     QueryFailed(String),
-    
+
     #[error("Database connection failed: {0}")]
     ConnectionFailed(String),
 
@@ -18,12 +17,8 @@ pub enum StorageError {
     Db(#[from] sea_orm::DbErr),
 }
 
-
 impl From<StorageError> for AppError {
-
     fn from(e: StorageError) -> Self {
         AppError::Storage(Box::new(e))
     }
-
 }
-

@@ -1,17 +1,11 @@
 use std::sync::Arc;
 
-use crate::source::{
-    EventSource,
-    EventListener, 
-    EventListenerManager
-};
-
+use crate::source::{EventListener, EventListenerManager, EventSource};
 
 pub struct EventSourceBuilder<T> {
     inner: T,
     event_manager: EventListenerManager,
 }
-
 
 impl<T> EventSourceBuilder<T> {
     pub fn new(inner: T) -> Self {
@@ -34,15 +28,12 @@ impl<T> EventSourceBuilder<T> {
     }
 }
 
-
 pub struct EventSourceWrapper<T> {
     pub inner: T,
     event_manager: EventListenerManager,
 }
 
-
 impl<T> EventSource for EventSourceWrapper<T> {
-
     fn event_manager(&self) -> &EventListenerManager {
         &self.event_manager
     }
@@ -50,7 +41,4 @@ impl<T> EventSource for EventSourceWrapper<T> {
     fn event_manager_mut(&mut self) -> &mut EventListenerManager {
         &mut self.event_manager
     }
-
 }
-
-

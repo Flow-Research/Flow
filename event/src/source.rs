@@ -1,21 +1,20 @@
-use std::{error::Error, sync::{Arc, RwLock}};
+use std::{
+    error::Error,
+    sync::{Arc, RwLock},
+};
 
 use crate::types::Event;
-
 
 pub trait EventListener: Send + Sync {
     fn handle(&self, event: &Event) -> Result<(), Box<dyn Error>>;
 }
-
 
 #[derive(Clone)]
 pub struct EventListenerManager {
     listeners: Arc<RwLock<Vec<Arc<dyn EventListener>>>>,
 }
 
-
 impl EventListenerManager {
-    
     pub fn new() -> Self {
         Self {
             listeners: Arc::new(RwLock::new(Vec::new())),
@@ -43,9 +42,7 @@ impl EventListenerManager {
         let mut listeners = self.listeners.write().unwrap();
         listeners.clear();
     }
-
 }
-
 
 impl Default for EventListenerManager {
     fn default() -> Self {
@@ -53,9 +50,7 @@ impl Default for EventListenerManager {
     }
 }
 
-
 pub trait EventSource {
-
     fn event_manager(&self) -> &EventListenerManager;
 
     fn event_manager_mut(&mut self) -> &mut EventListenerManager;
@@ -75,7 +70,4 @@ pub trait EventSource {
     fn listener_count(&self) -> usize {
         self.event_manager().listener_count()
     }
-
 }
-
-

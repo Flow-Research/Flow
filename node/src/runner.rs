@@ -1,10 +1,11 @@
-use crate::{api::node::Node, bootstrap::{self, config::Config}};
+use crate::{
+    api::node::Node,
+    bootstrap::{self, config::Config},
+};
 use errors::AppError;
 use log::info;
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, DatabaseConnection};
-
-
 
 pub async fn run() -> Result<(), AppError> {
     let config = Config::from_env()?;
@@ -20,22 +21,18 @@ pub async fn run() -> Result<(), AppError> {
     let db_conn = setup_database(&config).await?;
     info!("Database setup and migrations complete.");
 
-
-    let node = Node::new(
-        node_data, 
-        db_conn
-    );
+    let node = Node::new(node_data, db_conn);
 
     // --- Application is now running ---
     // Start server, event loops, or other long-running
     // tasks, using the initialized objects.
+
     info!("Application running. Press Ctrl+C to exit.");
     // For example, wait forever:
     tokio::signal::ctrl_c().await?;
 
     Ok(())
 }
-
 
 async fn setup_database(config: &Config) -> Result<DatabaseConnection, AppError> {
     let db_config = &config.db;
@@ -49,13 +46,14 @@ async fn setup_database(config: &Config) -> Result<DatabaseConnection, AppError>
         .sqlx_logging(db_config.logging_enabled)
         .sqlx_logging_level(log::LevelFilter::Info); // #TODO: hard-coded right now, remember to externalize into a config
 
-    let connection = sea_orm::Database::connect(opt).await
+    let connection = sea_orm::Database::connect(opt)
+        .await
         .map_err(|db_err| AppError::Storage(Box::new(db_err)))?;
 
     info!("Running database migrations...");
-    Migrator::up(&connection, None).await
+    Migrator::up(&connection, None)
+        .await
         .map_err(|db_err| AppError::Migration(Box::new(db_err)))?;
 
     Ok(connection)
 }
-

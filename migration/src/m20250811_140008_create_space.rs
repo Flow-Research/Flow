@@ -1,16 +1,10 @@
 use sea_orm_migration::{
-    prelude::*, 
-    schema::{
-        pk_auto,
-        string,
-        timestamp_with_time_zone,
-    },
+    prelude::*,
+    schema::{pk_auto, string, timestamp_with_time_zone},
 };
-
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
-
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -36,8 +30,6 @@ impl MigrationTrait for Migration {
     }
 }
 
-
-
 #[derive(DeriveIden)]
 enum Space {
     Table,
@@ -46,5 +38,3 @@ enum Space {
     Location,
     TimeCreated,
 }
-
-

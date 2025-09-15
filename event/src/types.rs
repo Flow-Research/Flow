@@ -1,17 +1,13 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
-use serde_json::Value;
-use serde::{Deserialize, Serialize};
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EventType(String);
 
-
 impl EventType {
-
     pub fn new(event_type: impl Into<String>) -> Self {
         EventType(event_type.into())
     }
@@ -23,7 +19,6 @@ impl EventType {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
 }
 
 impl fmt::Display for EventType {
@@ -44,8 +39,6 @@ impl From<String> for EventType {
     }
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub event_type: EventType,
@@ -54,9 +47,7 @@ pub struct Event {
     pub properties: HashMap<String, Value>,
 }
 
-
 impl Event {
-    
     pub fn new(event_type: EventType, source_id: String) -> Self {
         Self {
             event_type,
@@ -87,20 +78,23 @@ impl Event {
     }
 
     pub fn with_str(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.properties.insert(key.into(), Value::String(value.into()));
+        self.properties
+            .insert(key.into(), Value::String(value.into()));
         self
     }
 
-    pub fn with_number<T>(mut self, key: impl Into<String>, value: T) -> Self 
+    pub fn with_number<T>(mut self, key: impl Into<String>, value: T) -> Self
     where
         T: Into<serde_json::Number>,
     {
-        self.properties.insert(key.into(), Value::Number(value.into()));
+        self.properties
+            .insert(key.into(), Value::Number(value.into()));
         self
     }
 
     pub fn with_int(mut self, key: impl Into<String>, value: i64) -> Self {
-        self.properties.insert(key.into(), Value::Number(value.into()));
+        self.properties
+            .insert(key.into(), Value::Number(value.into()));
         self
     }
 
@@ -116,7 +110,7 @@ impl Event {
         self
     }
 
-    pub fn with_object<T>(mut self, key: impl Into<String>, value: &T) -> Self 
+    pub fn with_object<T>(mut self, key: impl Into<String>, value: &T) -> Self
     where
         T: Serialize,
     {
@@ -126,7 +120,7 @@ impl Event {
         self
     }
 
-    pub fn with_array<T>(mut self, key: impl Into<String>, values: Vec<T>) -> Self 
+    pub fn with_array<T>(mut self, key: impl Into<String>, values: Vec<T>) -> Self
     where
         T: Into<Value>,
     {
@@ -140,7 +134,7 @@ impl Event {
         self
     }
 
-    pub fn with_properties_iter<K, V, I>(mut self, properties: I) -> Self 
+    pub fn with_properties_iter<K, V, I>(mut self, properties: I) -> Self
     where
         K: Into<String>,
         V: Into<Value>,
@@ -218,17 +212,17 @@ impl Event {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
-
 }
-
 
 impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Event[{}] from {} at {} ({} properties)", 
-               self.event_type, 
-               self.source_id, 
-               self.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
-               self.properties.len())
+        write!(
+            f,
+            "Event[{}] from {} at {} ({} properties)",
+            self.event_type,
+            self.source_id,
+            self.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+            self.properties.len()
+        )
     }
 }
-

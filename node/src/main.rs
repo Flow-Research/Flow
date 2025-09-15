@@ -1,6 +1,4 @@
-
 use log::error;
-
 
 #[tokio::main]
 async fn main() {
@@ -11,4 +9,3 @@ async fn main() {
         std::process::exit(1);
     }
 }
-

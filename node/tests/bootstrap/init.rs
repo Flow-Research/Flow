@@ -1,8 +1,7 @@
+use chrono::{DateTime, Utc};
+use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use std::fs;
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
-use node::bootstrap::init::{initialize_config_dir, AuthMetadata};
-
 
 fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {
     // multicodec prefix for ed25519-pub: 0xED 0x01 (varint encoded)
@@ -12,7 +11,6 @@ fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {
     let pub_key_multibase = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
     format!("did:key:{}", pub_key_multibase)
 }
-
 
 #[test]
 fn bootstrap_first_run_creates_files_and_auth() -> Result<(), Box<dyn std::error::Error>> {

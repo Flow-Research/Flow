@@ -1,6 +1,6 @@
-use std::{env, error::Error, fs, io::Write};
-use std::path::{Path, PathBuf};
 use directories::BaseDirs;
+use std::path::{Path, PathBuf};
+use std::{env, error::Error, fs, io::Write};
 
 use errors::AppError;
 use rand::rngs::OsRng;
@@ -13,13 +13,11 @@ use std::os::unix::fs::PermissionsExt;
 use ed25519_dalek::SigningKey;
 use multibase::Base;
 
-
 pub struct NodeData {
     pub id: String,
     pub private_key: Vec<u8>,
     pub public_key: Vec<u8>,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthMetadata {
@@ -29,7 +27,6 @@ pub struct AuthMetadata {
     pub pub_key_multibase: String,
 }
 
-
 struct Paths {
     config_dir: PathBuf,
     keystore_dir: PathBuf,
@@ -38,12 +35,10 @@ struct Paths {
     pub_key_file: PathBuf,
 }
 
-
 pub fn initialize() -> Result<NodeData, AppError> {
     let config_dir = get_flow_config_dir();
     initialize_config_dir(&config_dir)
 }
-
 
 pub fn get_flow_config_dir() -> String {
     if let Ok(p) = env::var("FLOW_CONFIG_HOME") {
@@ -61,20 +56,22 @@ pub fn get_flow_config_dir() -> String {
     "flow".to_string()
 }
 
-
-pub fn initialize_config_dir(dir: &str) -> Result<NodeData, AppError>{
+pub fn initialize_config_dir(dir: &str) -> Result<NodeData, AppError> {
     let p = paths(dir);
     let _created = create_directory(&p.config_dir)
         .map_err(|e| AppError::Bootstrap(format!("Failed to create directory. {}", e)))?;
 
     if p.auth_file.exists() {
-        return load_existing(&p)
-            .map_err(|e| AppError::Bootstrap(format!("Error while loading existing configurations. {}", e)));
+        return load_existing(&p).map_err(|e| {
+            AppError::Bootstrap(format!(
+                "Error while loading existing configurations. {}",
+                e
+            ))
+        });
     }
 
     bootstrap_new(&p)
 }
-
 
 fn paths(dir: &str) -> Paths {
     let config_dir = PathBuf::from(dir);
@@ -89,14 +86,13 @@ fn paths(dir: &str) -> Paths {
     }
 }
 
-
 fn generate_keys_and_did() -> (Vec<u8>, Vec<u8>, String, String) {
     let mut rng = OsRng;
     let sk = SigningKey::generate(&mut rng);
     let vk = sk.verifying_key();
 
     let priv_key_bytes = sk.to_bytes().to_vec(); // 32 bytes
-    let pub_key_bytes = vk.to_bytes().to_vec();  // 32 bytes
+    let pub_key_bytes = vk.to_bytes().to_vec(); // 32 bytes
 
     // multicodec prefix for ed25519-pub: 0xED 0x01
     let mut multicodec_key = Vec::with_capacity(2 + pub_key_bytes.len());
@@ -109,10 +105,9 @@ fn generate_keys_and_did() -> (Vec<u8>, Vec<u8>, String, String) {
     (priv_key_bytes, pub_key_bytes, pub_key_multibase, did)
 }
 
-
 fn create_directory<P: AsRef<Path>>(path: P) -> Result<bool, Box<dyn Error>> {
     let path = path.as_ref();
-    
+
     // Check if path already exists and is a directory
     if path.exists() {
         if path.is_dir() {
@@ -121,28 +116,24 @@ fn create_directory<P: AsRef<Path>>(path: P) -> Result<bool, Box<dyn Error>> {
             return Err(format!("Path exists but is not a directory: {}", path.display()).into());
         }
     }
-    
+
     // Create the directory and all parents
     fs::create_dir_all(path)?;
-    
+
     Ok(true)
 }
-
 
 fn load_existing(p: &Paths) -> Result<NodeData, Box<dyn Error>> {
     let meta: AuthMetadata = serde_json::from_slice(&fs::read(&p.auth_file)?)?;
     let priv_key_bytes = fs::read(&p.priv_key_file)?;
     let pub_key_bytes = fs::read(&p.pub_key_file)?;
 
-    Ok(
-        NodeData { 
-            id: meta.did, 
-            private_key: priv_key_bytes, 
-            public_key: pub_key_bytes 
-        }
-    )
+    Ok(NodeData {
+        id: meta.did,
+        private_key: priv_key_bytes,
+        public_key: pub_key_bytes,
+    })
 }
-
 
 fn bootstrap_new(p: &Paths) -> Result<NodeData, AppError> {
     ensure_keystore_dir(p)
@@ -169,15 +160,12 @@ fn bootstrap_new(p: &Paths) -> Result<NodeData, AppError> {
     write_atomic_with_mode(&p.auth_file, json.as_bytes(), 0o644)
         .map_err(|e| AppError::Bootstrap(format!("Failed to write auth file: {}", e)))?;
 
-    Ok(
-        NodeData { 
-            id: did, 
-            private_key: priv_key_bytes, 
-            public_key: pub_key_bytes 
-        }
-    )
+    Ok(NodeData {
+        id: did,
+        private_key: priv_key_bytes,
+        public_key: pub_key_bytes,
+    })
 }
-
 
 fn ensure_keystore_dir(p: &Paths) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&p.keystore_dir)?;
@@ -191,7 +179,6 @@ fn ensure_keystore_dir(p: &Paths) -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-
 
 // Atomic write with permissions
 fn write_atomic_with_mode(path: &Path, data: &[u8], mode: u32) -> Result<(), Box<dyn Error>> {
@@ -211,4 +198,3 @@ fn write_atomic_with_mode(path: &Path, data: &[u8], mode: u32) -> Result<(), Box
     tmp.persist(path)?;
     Ok(())
 }
-

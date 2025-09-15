@@ -1,23 +1,23 @@
-use std::{error::Error, path::{Path, PathBuf}, sync::mpsc, thread};
 use chrono::{DateTime, Utc};
-use event::types::{Event, EventType};
+use errors::AppError;
 use event::source::{EventListenerManager, EventSource};
+use event::types::{Event, EventType};
 use log::{error, info, warn};
 use notify::{EventKind, RecursiveMode, Watcher};
-use errors::AppError;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use once_cell::sync::Lazy;
-
-
-
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
+};
 
 pub static FILE_CREATED: Lazy<EventType> = Lazy::new(|| EventType::new("flow.fs.file.created"));
 pub static FILE_MODIFIED: Lazy<EventType> = Lazy::new(|| EventType::new("flow.fs.file.modified"));
 pub static FILE_DELETED: Lazy<EventType> = Lazy::new(|| EventType::new("flow.fs.file.deleted"));
 pub static FILE_RENAMED: Lazy<EventType> = Lazy::new(|| EventType::new("flow.fs.file.renamed"));
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
@@ -27,7 +27,6 @@ pub struct FileMetadata {
     pub permissions: Option<u32>,
 }
 
-
 pub struct FileSystemWatcher {
     space_key: String,
     watch_dir: PathBuf,
@@ -35,10 +34,7 @@ pub struct FileSystemWatcher {
     _watcher_handle: Option<std::thread::JoinHandle<()>>,
 }
 
-
 impl FileSystemWatcher {
-
-
     pub fn new(space_key: String, watch_dir: PathBuf) -> Result<Self, AppError> {
         Ok(Self {
             space_key,
@@ -59,10 +55,10 @@ impl FileSystemWatcher {
         let space_key = self.space_key.clone();
         let watch_path = self.watch_dir.clone();
         let event_manager = self.event_manager.clone(); // Clone the manager for thread sharing
-        
+
         let handle = thread::spawn(move || {
             let _watcher = watcher;
-            
+
             loop {
                 match rx.recv() {
                     Ok(notify_event) => {
@@ -70,9 +66,9 @@ impl FileSystemWatcher {
                             notify_event,
                             &space_key,
                             &watch_path,
-                            &event_manager
+                            &event_manager,
                         ) {
-                            Ok(_) => {},
+                            Ok(_) => {}
                             Err(e) => error!("Error processing file system event: {}", e),
                         }
                     }
@@ -87,7 +83,6 @@ impl FileSystemWatcher {
         self._watcher_handle = Some(handle);
         Ok(())
     }
-
 
     fn convert_and_publish_fs_event(
         notify_event: Result<notify::event::Event, notify::Error>,
@@ -106,22 +101,19 @@ impl FileSystemWatcher {
         // Process each path in the notify event
         for path in notify_event.paths {
             let fs_event_type = Self::classify_notify_event(&notify_event.kind, &path);
-            
+
             if let Some(event_type) = fs_event_type {
-                let event = Self::create_flow_event(
-                    event_type,
-                    &path,
-                    base_path,
-                    space_key
-                )?;
+                let event = Self::create_flow_event(event_type, &path, base_path, space_key)?;
 
                 // Publish the event to all listeners
                 if let Err(e) = event_manager.publish(&event) {
                     error!("Failed to publish file system event: {}", e);
                 } else {
-                    info!("Published file system event: {} for path: {:?}", 
-                          event.event_type.as_str(), 
-                          path.strip_prefix(base_path).unwrap_or(&path));
+                    info!(
+                        "Published file system event: {} for path: {:?}",
+                        event.event_type.as_str(),
+                        path.strip_prefix(base_path).unwrap_or(&path)
+                    );
                 }
             }
         }
@@ -131,7 +123,7 @@ impl FileSystemWatcher {
 
     fn classify_notify_event(kind: &EventKind, path: &Path) -> Option<EventType> {
         use notify::EventKind::*;
-        
+
         match kind {
             Create(_) => {
                 info!("File/directory created: {:?}", path);
@@ -163,9 +155,7 @@ impl FileSystemWatcher {
         space_key: &str,
     ) -> Result<event::types::Event, AppError> {
         // Get relative path from base
-        let relative_path = path.strip_prefix(base_path)
-            .unwrap_or(path)
-            .to_path_buf();
+        let relative_path = path.strip_prefix(base_path).unwrap_or(path).to_path_buf();
 
         let metadata = if path.exists() {
             Self::get_file_metadata(path)?
@@ -186,7 +176,8 @@ impl FileSystemWatcher {
     fn get_file_metadata(path: &Path) -> Result<Option<FileMetadata>, AppError> {
         match std::fs::metadata(path) {
             Ok(metadata) => {
-                let modified_time = metadata.modified()
+                let modified_time = metadata
+                    .modified()
                     .map_err(|e| AppError::IO(e))?
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|e| AppError::Config(format!("Invalid file time: {}", e)))?;
@@ -194,9 +185,10 @@ impl FileSystemWatcher {
                 Ok(Some(FileMetadata {
                     size: metadata.len(),
                     modified_time: DateTime::from_timestamp(
-                        modified_time.as_secs() as i64, 
-                        modified_time.subsec_nanos()
-                    ).unwrap_or_else(|| Utc::now()),
+                        modified_time.as_secs() as i64,
+                        modified_time.subsec_nanos(),
+                    )
+                    .unwrap_or_else(|| Utc::now()),
                     is_directory: metadata.is_dir(),
                     permissions: Self::get_permissions(&metadata),
                 }))
@@ -233,10 +225,7 @@ impl FileSystemWatcher {
     pub fn get_watch_path(&self) -> &Path {
         &self.watch_dir
     }
-
-
 }
-
 
 impl Drop for FileSystemWatcher {
     fn drop(&mut self) {
@@ -244,18 +233,12 @@ impl Drop for FileSystemWatcher {
     }
 }
 
-
 impl EventSource for FileSystemWatcher {
-
     fn event_manager(&self) -> &event::source::EventListenerManager {
         &self.event_manager
     }
 
-
     fn event_manager_mut(&mut self) -> &mut event::source::EventListenerManager {
         &mut self.event_manager
     }
-
 }
-
-

@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Configuration Error: {0}")]
@@ -21,4 +20,3 @@ pub enum AppError {
     #[error("Migration failed: {0}")]
     Migration(Box<dyn std::error::Error + Send + Sync>),
 }
-
