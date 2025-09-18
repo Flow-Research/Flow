@@ -21,7 +21,7 @@ pub async fn run() -> Result<(), AppError> {
     let db_conn = setup_database(&config).await?;
     info!("Database setup and migrations complete.");
 
-    let node = Node::new(node_data, db_conn);
+    let _node = Node::new(node_data, db_conn);
 
     // --- Application is now running ---
     // Start server, event loops, or other long-running

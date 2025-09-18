@@ -42,8 +42,13 @@ build-release: check-pkg-defined
 
 .PHONY: test
 test:
-	@echo "--> Running tests for all packages in the workspace"
-	@cargo test --workspace
+	@echo "--> Running tests for all packages in the workspace, excluding doc-tests"
+	@cargo test --workspace --tests
+
+.PHONY: doc-test
+doc-test:
+	@echo "--> Running doc tests for all packages in the workspace"
+	@cargo test --workspace --doc
 
 .PHONY: check
 check:
@@ -76,7 +81,8 @@ help:
 	@echo "  build-release   - Build a specific package for production."
 	@echo ""
 	@echo "Workspace-Wide Commands:"
-	@echo "  test            - Run all tests in the workspace."
+	@echo "  test            - Run all tests in the workspace, excluding doc-tests."
+	@echo "  doc-test        - Run all doc-tests in the workspace."
 	@echo "  check           - Check the entire workspace for errors."
 	@echo "  clean           - Remove all build artifacts."
 	@echo ""
