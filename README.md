@@ -5,7 +5,7 @@ Flow is a decentralized coordination platform enabling agents and users to co-cr
 
 ## Core Principles
 
-1.  **Local-first + Verifiable:** Data and computation start locally.
+1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
 2.  **Capability-Based Access:** Authentication and authorization is decentralized. Permissions are based on Verifiable Credentials and Capabilities.
 3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
 4.  **Peer to Peer networking:** Agents and users connect and coordinate via a decentralized network.
