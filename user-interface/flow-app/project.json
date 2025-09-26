@@ -1,0 +1,72 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "flow-app",
+  "root": "user-interface/flow-app",
+  "projectType": "application",
+  "targets": {
+    "start": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run start",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "android": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run android",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "ios": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run ios",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "web": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run web",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run lint",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "reset-project": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run reset-project",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "install": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm install",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "build-android": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "expo build:android",
+        "cwd": "user-interface/flow-app"
+      }
+    },
+    "build-ios": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "expo build:ios",
+        "cwd": "user-interface/flow-app"
+      }
+    }
+  },
+  "tags": ["frontend", "mobile", "react-native", "expo", "ios", "android"]
+}

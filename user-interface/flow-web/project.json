@@ -1,0 +1,69 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "flow-web",
+  "root": "user-interface/flow-web",
+  "projectType": "application",
+  "targets": {
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run dev",
+        "cwd": "user-interface/flow-web"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run build",
+        "cwd": "user-interface/flow-web"
+      },
+      "outputs": ["{workspaceRoot}/user-interface/flow-web/dist"]
+    },
+    "preview": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run preview",
+        "cwd": "user-interface/flow-web"
+      },
+      "dependsOn": ["build"]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run lint",
+        "cwd": "user-interface/flow-web"
+      }
+    },
+    "electron-dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run electron-dev",
+        "cwd": "user-interface/flow-web"
+      }
+    },
+    "electron": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run electron",
+        "cwd": "user-interface/flow-web"
+      }
+    },
+    "electron-pack": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run electron-pack",
+        "cwd": "user-interface/flow-web"
+      },
+      "outputs": ["{workspaceRoot}/user-interface/flow-web/electron-dist"],
+      "dependsOn": ["build"]
+    },
+    "install": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm install",
+        "cwd": "user-interface/flow-web"
+      }
+    }
+  },
+  "tags": ["frontend", "web", "desktop", "react", "vite", "electron"]
+}

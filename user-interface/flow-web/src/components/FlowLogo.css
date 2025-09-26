@@ -1,0 +1,19 @@
+.flow-logo {
+  margin: 2rem auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.flow-logo-svg {
+  transition: transform 0.3s ease-in-out;
+  cursor: pointer;
+}
+
+.flow-logo-svg:hover {
+  transform: scale(1.1) rotate(5deg);
+}
+
+.flow-logo-svg:active {
+  transform: scale(0.95);
+}

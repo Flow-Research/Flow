@@ -1,0 +1,48 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "user-interface",
+  "root": "user-interface",
+  "projectType": "library",
+  "targets": {
+    "lint-all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": ["nx run flow-web:lint", "nx run flow-app:lint"],
+        "parallel": true
+      }
+    },
+    "install-all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": ["nx run flow-web:install", "nx run flow-app:install"],
+        "parallel": true
+      }
+    },
+    "dev-web": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "nx run flow-web:dev"
+      }
+    },
+    "dev-mobile": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "nx run flow-app:start"
+      }
+    },
+    "dev-desktop": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "nx run flow-web:electron-dev"
+      }
+    },
+    "build-all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": ["nx run flow-web:build", "nx run flow-web:electron-pack"],
+        "parallel": false
+      }
+    }
+  },
+  "tags": ["frontend", "user-interface"]
+}
