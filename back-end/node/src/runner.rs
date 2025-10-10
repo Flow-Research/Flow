@@ -1,11 +1,13 @@
 use crate::{
     api::node::Node,
     bootstrap::{self, config::Config},
+    cli,
 };
 use errors::AppError;
 use log::info;
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, DatabaseConnection};
+use std::env;
 
 pub async fn run() -> Result<(), AppError> {
     let config = Config::from_env()?;
@@ -21,7 +23,17 @@ pub async fn run() -> Result<(), AppError> {
     let db_conn = setup_database(&config).await?;
     info!("Database setup and migrations complete.");
 
-    let _node = Node::new(node_data, db_conn);
+    let node = Node::new(node_data, db_conn);
+
+    // Load existing spaces to ensure persistence across restarts
+    node.load_existing_spaces().await?;
+
+    // Handle CLI arguments if provided
+    let args: Vec<String> = env::args().skip(1).collect();
+    if !args.is_empty() {
+        cli::handle_cli_args(&node, args).await?;
+        return Ok(());
+    }
 
     // --- Application is now running ---
     // Start server, event loops, or other long-running

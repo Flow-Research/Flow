@@ -73,7 +73,7 @@ pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppErro
     }
 }
 
-fn generate_space_key(dir: &str) -> Result<String, AppError> {
+pub fn generate_space_key(dir: &str) -> Result<String, AppError> {
     let path = Path::new(dir).canonicalize().map_err(|e| AppError::IO(e))?;
 
     let path_str = path

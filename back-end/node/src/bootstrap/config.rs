@@ -45,7 +45,7 @@ impl Config {
 
         // --- Parse all variables ---
         let database_url = env::var("DATABASE_URL")
-            .map_err(|_| AppError::Config("DATABASE_URL must be set".to_string()))?;
+            .unwrap_or_else(|_| "sqlite:flow.db".to_string());
 
         let max_connections = get_env_u64("DB_MAX_CONNECTIONS", 100)? as u32;
         let min_connections = get_env_u64("DB_MIN_CONNECTIONS", 5)? as u32;
