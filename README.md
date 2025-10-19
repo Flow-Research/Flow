@@ -52,6 +52,22 @@ The project uses [nx](https://nx.dev/) to manage the workspace. You will need to
 - Rust and Cargo installed
 - Node.js and npm/yarn/pnpm
 
+Depending on how you installed `nx`. In the project root, run 
+
+```sh
+nx --version
+
+# Output
+# Nx Version:
+# - Local: Not found
+# - Global: v21.6.4
+```
+
+you might need to initilise `nx`. If you installed, `nx` with `brew` or the output of the command above returns ` - Local: Not found`
+
+```
+nx init --interactive=false --useDotNxInstallation=true
+```
 
 ### Getting Started
 

@@ -140,7 +140,7 @@ impl ParsedPeerDid {
                 }
                 _ => {
                     // Unknown transform - skip or error
-                    log::warn!("Unknown transform code: {}", transform);
+                    log::warn!("Unknown transform code: {transform}");
                 }
             }
         }

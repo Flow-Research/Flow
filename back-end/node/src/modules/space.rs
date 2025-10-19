@@ -13,17 +13,17 @@ use sha2::{Digest, Sha256};
 use space::Entity as Space;
 
 pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppError> {
-    info!("Setting up space in directory: {}", dir);
+    info!("Setting up space in directory: {dir}");
 
     let path = Path::new(dir);
 
     if !path.exists() {
-        info!("Creating directory: {}", dir);
-        fs::create_dir_all(path).map_err(|e| AppError::IO(e))?;
+        info!("Creating directory: {dir}");
+        fs::create_dir_all(path).map_err(AppError::IO)?;
     }
 
     let space_key = generate_space_key(dir)?;
-    info!("Generated space key: {}", space_key);
+    info!("Generated space key: {space_key}");
 
     match Space::find()
         .filter(entity::space::Column::Key.eq(&space_key))
@@ -32,15 +32,13 @@ pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppErro
     {
         Ok(Some(_existing_space)) => {
             info!(
-                "Space already exists at directory: {} (key: {})",
-                dir, space_key
+                "Space already exists at directory: {dir} (key: {space_key})"
             );
             return Ok(());
         }
         Ok(None) => {
             warn!(
-                "Directory exists but no space record found. Creating space record for: {}",
-                dir
+                "Directory exists but no space record found. Creating space record for: {dir}"
             );
         }
         Err(e) => {
@@ -50,7 +48,7 @@ pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppErro
 
     let canonical_location = path
         .canonicalize()
-        .map_err(|e| AppError::IO(e))?
+        .map_err(AppError::IO)?
         .to_str()
         .ok_or_else(|| AppError::Config("Directory path contains invalid UTF-8".to_owned()))?
         .to_owned();
@@ -75,7 +73,7 @@ pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppErro
 }
 
 fn generate_space_key(dir: &str) -> Result<String, AppError> {
-    let path = Path::new(dir).canonicalize().map_err(|e| AppError::IO(e))?;
+    let path = Path::new(dir).canonicalize().map_err(AppError::IO)?;
 
     let path_str = path
         .to_str()
@@ -86,7 +84,7 @@ fn generate_space_key(dir: &str) -> Result<String, AppError> {
     let hash = hasher.finalize();
 
     // Convert to hex string
-    Ok(format!("{:x}", hash))
+    Ok(format!("{hash:x}"))
 }
 
 //////////////////////////////////////////////////////////////////////////

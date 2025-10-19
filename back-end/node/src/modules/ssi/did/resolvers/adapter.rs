@@ -123,7 +123,7 @@ impl DidResolver {
                     public_key_id: did.to_string(),
                     signed_data: did.to_string(),
                 }),
-                registry_version: Some(format!("did:{}:latest", method)),
+                registry_version: Some(format!("did:{method}:latest")),
             }),
             "web" => match Self::web_endpoint_from_did(did) {
                 Ok(url) => Some(VdrInfo {
@@ -198,7 +198,7 @@ impl DidResolver {
         }
 
         // Seed a base https:// URL with the authority (host[:port])
-        let mut url = Url::parse(&format!("https://{}/", authority_dec))?;
+        let mut url = Url::parse(&format!("https://{authority_dec}/"))?;
 
         // Collect and decode path segments
         let mut segs: Vec<String> = parts
@@ -258,7 +258,7 @@ impl DidResolver {
                 let start = Instant::now();
 
                 let did_ref = DID::new(did.as_bytes()).map_err(|e| {
-                    ResolutionError::InvalidDid(format!("Invalid DID format: {:?}", e))
+                    ResolutionError::InvalidDid(format!("Invalid DID format: {e:?}"))
                 })?;
                 let ssi_options = Self::convert_options(options);
                 let ssi_output = self.inner.resolve_with(did_ref, ssi_options).await?;

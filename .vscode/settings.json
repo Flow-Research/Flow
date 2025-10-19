@@ -3,14 +3,39 @@
   // "editor.formatOnSave": true,
   // Rust-specific
   "[rust]": {
+    // Set line ending to LF (Linux/macOS style, common in source control)
+    "files.eol": "\n",
+
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     // Format on save
     "editor.formatOnSave": true,
     // Indentation: Each tab indents 4 spaces
     "editor.tabSize": 4
+    "editor.insertSpaces": true,
   },
   "rust-analyzer.linkedProjects": [
     "./back-end/Cargo.toml"
   ],
   "rust-analyzer.cargo.features": "all"
+
+
+  // Use 'clippy' instead of 'check' for continuous analysis,
+  // which provides much more comprehensive linting.
+  "rust-analyzer.check.command": "clippy",
+
+  // Treat clippy warnings/errors as VS Code diagnostics
+  "rust-analyzer.check.allTargets": true,
+
+  // Enable more diagnostic details in tooltips
+  "rust-analyzer.diagnostics.enableExperimental": true,
+
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+
+  // Suggest extensions that are beneficial for a Rust project
+  "recommendations": [
+    "rust-lang.rust-analyzer", // Official Language Server
+    "vadimcn.vscode-lldb",    // Debugger (essential for F5 debugging)
+    "tamasfe.even-better-toml", // Syntax highlighting for Cargo.toml and other TOML files
+    "serayuzgur.crates"       // Dependency version management for Cargo.toml
+  ]
 }

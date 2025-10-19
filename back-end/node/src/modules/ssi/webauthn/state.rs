@@ -45,17 +45,17 @@ impl AuthState {
         info!("Initializing WebAuthn authstate");
 
         let rp_origin = Url::parse(&config.rp_origin)
-            .map_err(|e| AppError::Config(format!("Invalid WebAuthn origin URL: {}", e)))?;
+            .map_err(|e| AppError::Config(format!("Invalid WebAuthn origin URL: {e}")))?;
 
         let builder = WebauthnBuilder::new(&config.rp_id, &rp_origin)
-            .map_err(|e| AppError::Config(format!("Invalid WebAuthn configuration: {}", e)))?;
+            .map_err(|e| AppError::Config(format!("Invalid WebAuthn configuration: {e}")))?;
 
         let builder = builder.rp_name(&config.rp_name);
 
         let webauthn = Arc::new(
             builder
                 .build()
-                .map_err(|e| AppError::Config(format!("Failed to build WebAuthn: {}", e)))?,
+                .map_err(|e| AppError::Config(format!("Failed to build WebAuthn: {e}")))?,
         );
 
         Ok(AuthState { webauthn })

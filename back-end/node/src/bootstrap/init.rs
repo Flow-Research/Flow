@@ -60,7 +60,7 @@ pub fn get_flow_config_dir() -> String {
 pub fn initialize_config_dir(dir: &str) -> Result<NodeData, AppError> {
     let p = paths(dir);
     let _created = create_directory(&p.config_dir)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to create directory. {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to create directory. {e}")))?;
 
     let lock_file = p.config_dir.join(".init.lock");
     let file = fs::OpenOptions::new()
@@ -73,10 +73,7 @@ pub fn initialize_config_dir(dir: &str) -> Result<NodeData, AppError> {
     if p.auth_file.exists() {
         fs4::fs_std::FileExt::unlock(&file)?;
         return load_existing(&p).map_err(|e| {
-            AppError::Bootstrap(format!(
-                "Error while loading existing configurations. {}",
-                e
-            ))
+            AppError::Bootstrap(format!("Error while loading existing configurations. {e}"))
         });
     }
 
@@ -112,7 +109,7 @@ fn generate_keys_and_did() -> (Vec<u8>, Vec<u8>, String, String) {
     multicodec_key.extend_from_slice(&pub_key_bytes);
 
     let pub_key_multibase = multibase::encode(Base::Base58Btc, &multicodec_key);
-    let did = format!("did:key:{}", pub_key_multibase);
+    let did = format!("did:key:{pub_key_multibase}");
 
     (priv_key_bytes, pub_key_bytes, pub_key_multibase, did)
 }
@@ -149,28 +146,28 @@ fn load_existing(p: &Paths) -> Result<NodeData, Box<dyn Error>> {
 
 fn bootstrap_new(p: &Paths) -> Result<NodeData, AppError> {
     ensure_keystore_dir(p)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to setup Keystore directories. {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to setup Keystore directories. {e}")))?;
 
     let (priv_key_bytes, pub_key_bytes, pub_key_multibase, did) = generate_keys_and_did();
 
     write_atomic_with_mode(&p.priv_key_file, &priv_key_bytes, 0o600)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to write private key: {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to write private key: {e}")))?;
 
     write_atomic_with_mode(&p.pub_key_file, &pub_key_bytes, 0o644)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to write public key: {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to write public key: {e}")))?;
 
     let meta = AuthMetadata {
         schema: "flow-auth/v1".to_string(),
         did: did.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
-        pub_key_multibase: pub_key_multibase,
+        pub_key_multibase,
     };
 
     let json = serde_json::to_string_pretty(&meta)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to serialize auth metadata: {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to serialize auth metadata: {e}")))?;
 
     write_atomic_with_mode(&p.auth_file, json.as_bytes(), 0o644)
-        .map_err(|e| AppError::Bootstrap(format!("Failed to write auth file: {}", e)))?;
+        .map_err(|e| AppError::Bootstrap(format!("Failed to write auth file: {e}")))?;
 
     Ok(NodeData {
         id: did,

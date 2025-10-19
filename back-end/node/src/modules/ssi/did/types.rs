@@ -37,7 +37,7 @@ impl ResolutionOptions {
     pub fn with_accept(mut self, accept: &str) -> Result<Self, String> {
         let media_type = accept
             .parse::<MediaType>()
-            .map_err(|e| format!("Invalid media type: {}", e))?;
+            .map_err(|e| format!("Invalid media type: {e}"))?;
         self.standard.accept = Some(media_type);
         Ok(self)
     }

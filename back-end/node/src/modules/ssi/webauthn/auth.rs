@@ -53,7 +53,7 @@ pub async fn start_registration(
     let existing_creds = get_existing_credentials(&node.db, &device_id)
         .await
         .map_err(|e| {
-            error!("Failed to query existing credentials: {}", e);
+            error!("Failed to query existing credentials: {e}");
             WebauthnError::CredentialRetrievalError
         })?;
 
@@ -79,7 +79,7 @@ pub async fn start_registration(
             };
 
             let mut cache = REG_CACHE.lock().map_err(|e| {
-                error!("Failed to acquire lock on REG_CACHE: {}", e);
+                error!("Failed to acquire lock on REG_CACHE: {e}");
                 WebauthnError::CredentialPersistenceError
             })?;
 
@@ -88,13 +88,12 @@ pub async fn start_registration(
             cache.insert(challenge_key.clone(), session);
 
             info!(
-                "Started Registration process with challenge: {}",
-                challenge_key
+                "Started Registration process with challenge: {challenge_key}"
             );
             (ccr, challenge_key)
         }
         Err(e) => {
-            info!("error -> {:?}", e);
+            info!("error -> {e:?}");
             return Err(e);
         }
     };
@@ -107,11 +106,11 @@ pub async fn finish_registration(
     challenge_key: &str,
     reg: RegisterPublicKeyCredential,
 ) -> Result<(String, String), WebauthnError> {
-    info!("Finishing registration for challenge_id: {}", challenge_key);
+    info!("Finishing registration for challenge_id: {challenge_key}");
 
     let (_uuid, device_id, reg_state) = {
         let mut cache = REG_CACHE.lock().map_err(|e| {
-            error!("Failed to acquire lock on REG_CACHE: {}", e);
+            error!("Failed to acquire lock on REG_CACHE: {e}");
             WebauthnError::CredentialRetrievalError
         })?;
 
@@ -135,28 +134,28 @@ pub async fn finish_registration(
 
     // Generate DID from passkey using SSI
     let did = generate_did_key_from_passkey(&passkey).map_err(|e| {
-        error!("Failed to generate DID: {}", e);
+        error!("Failed to generate DID: {e}");
         WebauthnError::CredentialPersistenceError
     })?;
 
     // Create DID Document
     let jwk = cose_to_jwk(passkey.get_public_key()).map_err(|e| {
-        error!("Failed to convert COSE to JWK: {}", e);
+        error!("Failed to convert COSE to JWK: {e}");
         WebauthnError::CredentialPersistenceError
     })?;
 
     let did_doc = create_did_document(&did, &jwk).map_err(|e| {
-        error!("Failed to create DID document: {}", e);
+        error!("Failed to create DID document: {e}");
         WebauthnError::CredentialPersistenceError
     })?;
 
     let did_doc_json = did_document_to_json(&did_doc).map_err(|e| {
-        error!("Failed to serialize DID document: {}", e);
+        error!("Failed to serialize DID document: {e}");
         WebauthnError::CredentialPersistenceError
     })?;
 
-    info!("Generated DID: {}", did);
-    info!("DID Document: {}", did_doc_json);
+    info!("Generated DID: {did}");
+    info!("DID Document: {did_doc_json}");
 
     // Create or get user with DID
     let user = get_or_create_user(
@@ -168,20 +167,20 @@ pub async fn finish_registration(
     )
     .await
     .map_err(|e| {
-        error!("Failed to create/get user: {}", e);
+        error!("Failed to create/get user: {e}");
         WebauthnError::CredentialPersistenceError
     })?;
 
     store_passkey(&node.db, user.id, &device_id, &passkey)
         .await
         .map_err(|e| {
-            error!("Failed to store Passkey: {}", e.to_string());
+            error!("Failed to store Passkey: {e}");
             WebauthnError::CredentialPersistenceError
         })?;
 
     info!(
-        "Passkey stored successfully for user: {} (DID: {})",
-        user.id, did
+        "Passkey stored successfully for user: {0} (DID: {did})",
+        user.id
     );
 
     Ok((did, did_doc_json))
@@ -193,10 +192,7 @@ pub async fn store_passkey(
     device_id: &str,
     passkey: &Passkey,
 ) -> Result<pass_key::ActiveModel, Box<dyn std::error::Error>> {
-    info!(
-        "Storing passkey for user {} with device_id {}",
-        user_id, device_id
-    );
+    info!("Storing passkey for user {user_id} with device_id {device_id}");
 
     // Serialize the entire Passkey object to JSON for storage
     let json_data = serde_json::to_string(&passkey)?;
@@ -247,7 +243,7 @@ pub async fn start_authentication(
     node: &Node,
 ) -> Result<(RequestChallengeResponse, String), WebauthnError> {
     let device_id = node.node_data.id.as_str();
-    info!("Starting authentication for device: {}", device_id);
+    info!("Starting authentication for device: {device_id}");
 
     // Get all passkeys for this device
     let passkeys = get_passkeys_for_device(&node.db, device_id)
@@ -275,7 +271,7 @@ pub async fn start_authentication(
             };
 
             let mut cache = AUTH_CACHE.lock().map_err(|e| {
-                error!("Failed to acquire lock on AUTH_CACHE: {}", e);
+                error!("Failed to acquire lock on AUTH_CACHE: {e}");
                 WebauthnError::CredentialPersistenceError
             })?;
 
@@ -284,13 +280,12 @@ pub async fn start_authentication(
             cache.insert(challenge_key.clone(), session);
 
             info!(
-                "Started authentication process with challenge: {}",
-                challenge_key
+                "Started authentication process with challenge: {challenge_key}"
             );
             (rcr, challenge_key)
         }
         Err(e) => {
-            info!("Authentication start error -> {:?}", e);
+            info!("Authentication start error -> {e:?}");
             return Err(e);
         }
     };
@@ -306,7 +301,7 @@ pub async fn finish_authentication(
 ) -> Result<AuthenticationResult, WebauthnError> {
     let (_uuid, device_id, auth_state) = {
         let mut cache = AUTH_CACHE.lock().map_err(|e| {
-            error!("Failed to acquire lock on AUTH_CACHE: {}", e);
+            error!("Failed to acquire lock on AUTH_CACHE: {e}");
             WebauthnError::CredentialRetrievalError
         })?;
 
@@ -379,8 +374,7 @@ async fn update_passkey_counter(
     active_model.update(db).await?;
 
     info!(
-        "Updated passkey counter for device: {} to {}",
-        device_id, new_counter
+        "Updated passkey counter for device: {device_id} to {new_counter}"
     );
     Ok(())
 }
@@ -394,7 +388,7 @@ async fn get_passkeys_by_device_id(
     use entity::pass_key::Column;
     use entity::pass_key::Entity as PassKeyEntity;
 
-    info!("Retrieving passkeys for device_id: {}", device_id);
+    info!("Retrieving passkeys for device_id: {device_id}");
 
     let passkey_models = PassKeyEntity::find()
         .filter(Column::DeviceId.eq(device_id))
@@ -430,7 +424,7 @@ async fn _get_passkey_by_credential_id(
     use entity::pass_key::Column;
     use entity::pass_key::Entity as PassKeyEntity;
 
-    info!("Looking up passkey by credential_id: {:x?}", credential_id);
+    info!("Looking up passkey by credential_id: {credential_id:x?}");
 
     let passkey_model = PassKeyEntity::find()
         .filter(Column::CredentialId.eq(credential_id))
@@ -501,7 +495,7 @@ async fn _update_sign_count(
 
     passkey.update(db).await?;
 
-    info!("Sign count updated successfully for passkey {}", passkey_id);
+    info!("Sign count updated successfully for passkey {passkey_id}");
 
     Ok(())
 }
@@ -520,12 +514,12 @@ async fn get_or_create_user(
         .one(db)
         .await?
     {
-        info!("Found existing user with DID: {}", did);
+        info!("Found existing user with DID: {did}");
         return Ok(user);
     }
 
     // Create new user
-    info!("Creating new user with DID: {}", did);
+    info!("Creating new user with DID: {did}");
     let device_ids = vec![device_id.to_string()];
 
     let new_user = user::ActiveModel {
@@ -540,7 +534,7 @@ async fn get_or_create_user(
     };
 
     let user = new_user.insert(db).await?;
-    info!("Created user with ID: {} and DID: {}", user.id, did);
+    info!("Created user with ID: {0} and DID: {did}", user.id);
 
     Ok(user)
 }

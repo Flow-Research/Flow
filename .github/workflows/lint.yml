@@ -1,0 +1,51 @@
+name: 'Lint, Build and Test'
+on:
+  pull_request:
+    branches: ['main']
+  push:
+    branches: ['main']
+
+jobs:
+  build-lint-and-test-changed-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Global Nx CLI
+        run: npm install -g nx
+
+      - name: Initialize Local Nx Wrapper
+        # sets up the local installation wrappers (.nx) that the subsequent 'npx nx' commands rely on.
+        run: nx init --interactive=false --useDotNxInstallation=true
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Ensure clippy and rustfmt are available for the lint tasks
+          components: rustfmt, clippy
+
+      # Determines which projects have changed since the last successful build on 'main'
+      - name: Set up NX Base and Head
+        uses: nrwl/nx-set-shas@v4
+        with:
+          main-branch-name: 'main'
+
+      # Lint Affected Projects
+      - name: Lint Affected Rust Projects (with Nx)
+        run: npx nx affected --target=lint --parallel=3
+
+      - name: Build Affected Rust Projects (with Nx)
+        run: npx nx affected --target=build --parallel=3
+
+      # Run Tests for Affected Projects
+      - name: Run Tests for Affected Rust Projects (with Nx)
+        run: npx nx affected --target=test --parallel=3

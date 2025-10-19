@@ -31,7 +31,7 @@ impl Node {
     }
 
     pub async fn create_space(&self, dir: &str) -> Result<(), AppError> {
-        info!("Setting up space in Directory: {}", dir);
+        info!("Setting up space in Directory: {dir}");
         space::new_space(&self.db, dir).await?;
         Ok(())
     }
@@ -42,7 +42,7 @@ impl Node {
         info!("Starting WebAuthn Registration..");
         webauthn::auth::start_registration(self)
             .await
-            .map_err(|e| AppError::Auth(format!("WebAuthn registration failed: {}", e)))
+            .map_err(|e| AppError::Auth(format!("WebAuthn registration failed: {e}")))
     }
 
     pub async fn finish_webauthn_registration(
@@ -53,7 +53,7 @@ impl Node {
         info!("Finishing WebAuthn Registration..");
         webauthn::auth::finish_registration(self, challenge_id, reg)
             .await
-            .map_err(|e| AppError::Auth(format!("WebAuthn registration failed: {}", e)))
+            .map_err(|e| AppError::Auth(format!("WebAuthn registration failed: {e}")))
     }
 
     pub async fn start_webauthn_authentication(
@@ -61,7 +61,7 @@ impl Node {
     ) -> Result<(RequestChallengeResponse, String), AppError> {
         webauthn::auth::start_authentication(self)
             .await
-            .map_err(|e| AppError::Auth(format!("WebAuthn authentication start failed: {}", e)))
+            .map_err(|e| AppError::Auth(format!("WebAuthn authentication start failed: {e}")))
     }
 
     pub async fn finish_webauthn_authentication(
@@ -72,6 +72,6 @@ impl Node {
         info!("Finishing WebAuthn Authentication..");
         webauthn::auth::finish_authentication(self, challenge_id, auth)
             .await
-            .map_err(|e| AppError::Auth(format!("WebAuthn authentication failed: {}", e)))
+            .map_err(|e| AppError::Auth(format!("WebAuthn authentication failed: {e}")))
     }
 }

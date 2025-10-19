@@ -73,10 +73,7 @@ async fn start_webauthn_registration(
     let node = app_state.node.read().await;
     match node.start_webauthn_registration().await {
         Ok((challenge, challenge_key)) => {
-            info!(
-                "WebAuthn registration started successfully with challenge_id: {}",
-                challenge_key
-            );
+            info!("WebAuthn registration started successfully with challenge_id: {challenge_key}");
             Ok(Json(json!({
                 "challenge": challenge,
                 "challenge_id": challenge_key
@@ -104,10 +101,10 @@ async fn finish_webauthn_registration(
         serde_json::Value::Object(credential_value.clone()),
     )
     .map_err(|e| {
-        error!("Failed to parse credential: {}", e);
+        error!("Failed to parse credential: {e}");
         (
             StatusCode::BAD_REQUEST,
-            format!("Invalid credential format: {}", e),
+            format!("Invalid credential format: {e}"),
         )
     })?;
 
@@ -116,10 +113,7 @@ async fn finish_webauthn_registration(
         .finish_webauthn_registration(challenge_id, reg_credential)
         .await
         .map_err(|e| {
-            error!(
-                "WebAuthn registration failed for challenge_id {}: {}",
-                challenge_id, e
-            );
+            error!("WebAuthn registration failed for challenge_id {challenge_id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
@@ -137,10 +131,7 @@ async fn start_webauthn_authentication(
     let node = app_state.node.read().await;
     match node.start_webauthn_authentication().await {
         Ok((challenge, challenge_id)) => {
-            info!(
-                "WebAuthn authentication started successfully with challenge_id: {}",
-                challenge_id
-            );
+            info!("WebAuthn authentication started successfully with challenge_id: {challenge_id}");
             Ok(Json(json!({
                 "challenge": challenge,
                 "challenge_id": challenge_id
@@ -168,10 +159,10 @@ async fn finish_webauthn_authentication(
         credential_value.clone(),
     ))
     .map_err(|e| {
-        error!("Failed to parse authentication credential: {}", e);
+        error!("Failed to parse authentication credential: {e}");
         (
             StatusCode::BAD_REQUEST,
-            format!("Invalid credential format: {}", e),
+            format!("Invalid credential format: {e}"),
         )
     })?;
 
@@ -180,10 +171,7 @@ async fn finish_webauthn_authentication(
         .finish_webauthn_authentication(challenge_id, auth_credential)
         .await
         .map_err(|e| {
-            error!(
-                "WebAuthn authentication failed for challenge_id {}: {}",
-                challenge_id, e
-            );
+            error!("WebAuthn authentication failed for challenge_id {challenge_id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 

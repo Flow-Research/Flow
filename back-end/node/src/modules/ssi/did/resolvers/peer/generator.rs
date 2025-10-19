@@ -52,7 +52,7 @@ impl PeerDidGenerator {
         // Encode as base58btc
         let encoded = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
 
-        Ok(format!("did:peer:0{}", encoded))
+        Ok(format!("did:peer:0{encoded}"))
     }
 
     /// Generate did:peer:0 from X25519 public key bytes
@@ -69,7 +69,7 @@ impl PeerDidGenerator {
 
         let encoded = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
 
-        Ok(format!("did:peer:0{}", encoded))
+        Ok(format!("did:peer:0{encoded}"))
     }
 
     /// Generate did:peer:0 from P-256 key (WebAuthn ES256)
@@ -92,7 +92,7 @@ impl PeerDidGenerator {
 
                 let encoded = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
 
-                Ok(format!("did:peer:0{}", encoded))
+                Ok(format!("did:peer:0{encoded}"))
             }
             _ => Err(PeerDidError::UnsupportedKeyType),
         }
@@ -112,7 +112,7 @@ impl PeerDidGenerator {
 
                 let encoded = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
 
-                Ok(format!("did:peer:0{}", encoded))
+                Ok(format!("did:peer:0{encoded}"))
             }
             _ => Err(PeerDidError::UnsupportedKeyType),
         }
@@ -134,13 +134,13 @@ impl PeerDidGenerator {
         // Add verification keys (transform: E)
         for key in verification_keys {
             let encoded = Self::encode_key_with_prefix('E', &key, 0xed)?;
-            parts.push(format!(".{}", encoded));
+            parts.push(format!(".{encoded}"));
         }
 
         // Add encryption keys (transform: V)
         for key in encryption_keys {
             let encoded = Self::encode_key_with_prefix('V', &key, 0xec)?;
-            parts.push(format!(".{}", encoded));
+            parts.push(format!(".{encoded}"));
         }
 
         Ok(parts.join(""))
@@ -157,7 +157,7 @@ impl PeerDidGenerator {
 
         let encoded = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
 
-        Ok(format!("{}{}", transform, encoded))
+        Ok(format!("{transform}{encoded}"))
     }
 }
 

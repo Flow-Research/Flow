@@ -99,18 +99,18 @@ impl ResolutionError {
 impl std::fmt::Display for ResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidDid(msg) => write!(f, "Invalid DID: {}", msg),
+            Self::InvalidDid(msg) => write!(f, "Invalid DID: {msg}"),
             Self::NotFound => write!(f, "DID not found"),
-            Self::MethodNotSupported(method) => write!(f, "DID method '{}' not supported", method),
-            Self::NetworkError(msg) => write!(f, "Network error: {}", msg),
-            Self::InvalidDidDocument(msg) => write!(f, "Invalid DID Document: {}", msg),
-            Self::SecurityError(msg) => write!(f, "Security error: {}", msg),
+            Self::MethodNotSupported(method) => write!(f, "DID method '{method}' not supported"),
+            Self::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            Self::InvalidDidDocument(msg) => write!(f, "Invalid DID Document: {msg}"),
+            Self::SecurityError(msg) => write!(f, "Security error: {msg}"),
             Self::Deactivated => write!(f, "DID has been deactivated"),
             Self::RepresentationNotSupported(repr) => {
-                write!(f, "Representation '{}' not supported", repr)
+                write!(f, "Representation '{repr}' not supported")
             }
-            Self::ResolutionFailed(msg) => write!(f, "Resolution failed: {}", msg),
-            Self::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            Self::ResolutionFailed(msg) => write!(f, "Resolution failed: {msg}"),
+            Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
         }
     }
 }

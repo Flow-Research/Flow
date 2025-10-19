@@ -43,7 +43,7 @@ impl Config {
                 .ok()
                 .map(|s| s.parse::<u64>())
                 .transpose()
-                .map_err(|_| AppError::Config(format!("Invalid value for {}", key)))?
+                .map_err(|_| AppError::Config(format!("Invalid value for {key}")))?
                 .unwrap_or(default))
         };
 
@@ -53,7 +53,7 @@ impl Config {
                 .ok()
                 .map(|s| bool::from_str(&s.to_lowercase()))
                 .transpose()
-                .map_err(|_| AppError::Config(format!("Invalid boolean value for {}", key)))?
+                .map_err(|_| AppError::Config(format!("Invalid boolean value for {key}")))?
                 .unwrap_or(default))
         };
 

@@ -1,0 +1,41 @@
+{
+  "tab_size": 4,
+  "soft_tabs": true,
+  "format_on_save": "on",
+
+  "languages": {
+    "Rust": {
+      "formatter": "language_server",
+      "format_on_save": "on"
+    }
+  },
+
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "check": {
+          // Use 'clippy' for additional diagnostics on save (recommended)
+          "command": "clippy",
+          // Check the entire workspace (all crates in the project)
+          "allTargets": true,
+          "features": "all"
+        },
+        "inlayHints": {
+          "chainingHints": true,
+          "parameterNames": true,
+          "typeHints": true,
+          "lifetimeElisionHints": "skip_trivial"
+        },
+        "diagnostics": {
+          "experimental": {
+            "enable": false
+          }
+        },
+        "cargo": {
+            // Include documentation targets in checks
+            "allTargets": true
+        }
+      }
+    }
+  }
+}

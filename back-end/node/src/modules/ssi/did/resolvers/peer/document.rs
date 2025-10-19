@@ -115,7 +115,7 @@ fn create_service(
     let endpoint = if service.routing_keys.is_empty() && service.accept.is_empty() {
         // Simple URI endpoint
         Endpoint::Uri(service.endpoint.clone().parse().map_err(|e| {
-            error!("Error encountered: {}", e);
+            error!("Error encountered: {e}");
             PeerDidError::InvalidFormat
         })?)
     } else {
@@ -130,7 +130,7 @@ fn create_service(
     Ok(Service {
         id: id
             .parse()
-            .map_err(|e| PeerDidError::DidParseError(format!("{:?}", e)))?,
+            .map_err(|e| PeerDidError::DidParseError(format!("{e:?}")))?,
 
         type_: OneOrMany::One(service.service_type.clone()),
 

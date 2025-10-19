@@ -34,7 +34,7 @@ pub fn generate_did_peer_from_passkey(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let did = PeerDidGenerator::from_passkey(passkey)?;
 
-    info!("Generated did:peer: {}", did);
+    info!("Generated did:peer: {did}");
     Ok(did)
 }
 
@@ -50,7 +50,7 @@ pub fn generate_did_key_from_passkey(
     // Generate DID from JWK
     let did = DIDKey::generate(&jwk)?;
 
-    info!("Generated DID: {}", did);
+    info!("Generated DID: {did}");
     Ok(did.into_string())
 }
 
@@ -110,7 +110,7 @@ pub fn cose_to_jwk(cose_key: &COSEKey) -> Result<JWK, Box<dyn std::error::Error>
             })
         }
         _ => {
-            error!("Unsupported COSE algorithm: {:?}", alg);
+            error!("Unsupported COSE algorithm: {alg:?}");
             Err("Unsupported COSE algorithm".into())
         }
     }
@@ -165,7 +165,7 @@ pub fn create_did_document(
     let did_buf = did.parse::<ssi::dids::DIDBuf>()?;
 
     // Create verification method ID
-    let verification_method_id = format!("{}#key-1", did).parse::<ssi::dids::DIDURLBuf>()?;
+    let verification_method_id = format!("{did}#key-1").parse::<ssi::dids::DIDURLBuf>()?;
 
     // Create verification method with JWK in properties
     let mut properties = BTreeMap::new();
