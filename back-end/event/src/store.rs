@@ -246,8 +246,6 @@ impl EventStore {
                 let event = Event {
                     id: event_id,
                     ts: timestamp,
-                    stream_id: self.stream_id.clone(),
-                    space_id: self.space_id.clone(),
                     event_type: P::TYPE.to_string(),
                     schema_version: P::VERSION,
                     payload: payload_value.clone(),

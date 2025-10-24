@@ -207,8 +207,6 @@ fn create_event_with_payload(message: &str, count: i32) -> Event {
 
     Event {
         id: Ulid::from_bytes([0; 16]),
-        stream_id: "test_stream".to_string(),
-        space_id: "test_space".to_string(),
         event_type: "TestEvent".to_string(),
         schema_version: 1,
         payload: json!({ "message": message, "count": count }),

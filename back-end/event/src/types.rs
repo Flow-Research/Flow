@@ -99,8 +99,6 @@ impl DottedVersionVector {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: Ulid,
-    pub stream_id: String,
-    pub space_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
     pub schema_version: u32,
@@ -145,8 +143,6 @@ impl Event {
 
         let canonical = json!({
             "id": self.id.to_string(),
-            "stream_id": self.stream_id,
-            "space_id": self.space_id,
             "type": self.event_type,
             "schema_version": self.schema_version,
             "payload": self.payload,
