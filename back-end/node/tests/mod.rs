@@ -6,6 +6,8 @@ pub mod util;
 #[cfg(test)]
 #[ctor::ctor]
 fn global_test_setup() {
+    dotenvy::dotenv().ok();
+
     env_logger::builder()
         .is_test(true)
         .filter_level(log::LevelFilter::Debug)
