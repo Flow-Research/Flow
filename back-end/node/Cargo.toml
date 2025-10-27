@@ -53,6 +53,10 @@ regex = "1.12.2"
 lingua = "1.7.2"
 whatlang = "0.18.0"
 anyhow = "1.0.100"
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+candle-transformers = "0.9.1"
+hf-hub = "0.4.3"
 
 [dev-dependencies]
 futures-util = "0.3.31"
