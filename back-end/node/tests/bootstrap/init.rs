@@ -1,8 +1,11 @@
 use axum::Router;
 use chrono::{DateTime, Utc};
+use errors::AppError;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
+use node::modules::ai_pipeline::PipelineManager;
+use node::modules::ai_pipeline::index::config::IndexingConfig;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +71,12 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
         public_key: vec![0u8; 32],
     };
 
-    let node = Node::new(node_data, db, kv, auth_state);
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
+    let node = Node::new(node_data, db, kv, auth_state, pipeline_manager);
 
     (node, temp_dir)
 }
@@ -107,7 +115,12 @@ pub fn create_test_node_with_db(device_id: &str, db: DatabaseConnection, kv_path
         public_key: vec![0u8; 32],
     };
 
-    Node::new(node_data, db, kv, auth_state)
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
+    Node::new(node_data, db, kv, auth_state, pipeline_manager)
 }
 
 fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {

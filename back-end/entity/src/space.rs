@@ -14,6 +14,15 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::space_index_status::Entity")]
+    SpaceIndexStatus,
+}
+
+impl Related<super::space_index_status::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::SpaceIndexStatus.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

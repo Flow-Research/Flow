@@ -1,4 +1,3 @@
-pub mod chunker;
 pub mod index;
 
 use std::{
@@ -9,13 +8,12 @@ use std::{
 };
 
 use anyhow::Result;
-use entity::space;
+use entity::{prelude::SpaceIndexStatus, space, space_index_status};
 use errors::AppError;
 use index::metrics::PipelineMetrics;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
 };
-use space::Entity as Space;
 use swiftide::{
     indexing::{
         self, IndexingStream, Node,
@@ -25,9 +23,8 @@ use swiftide::{
     },
     integrations,
     query::{
-        self, answers, query_transformers,
-        search_strategies::SimilaritySingleEmbedding,
-        states::{Answered, Pending},
+        self, answers, query_transformers, search_strategies::SimilaritySingleEmbedding,
+        states::Answered,
     },
     traits::ChunkerTransformer,
 };
@@ -52,8 +49,6 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub async fn build_indexing_pipeline(&self) -> Result<indexing::Pipeline<String>> {
-        indexing::Pipeline::from_loader(indexing::loaders::FileLoader::new(&self.location));
-
         let collection_name = format!("space-{}-idx", &self.space_key);
 
         // Initialize OpenAI client with retry logic
@@ -224,7 +219,6 @@ impl Pipeline {
         Ok(pipeline)
     }
 
-    /// Build a new query pipeline on-demand
     pub async fn build_query_pipeline(
         &self,
     ) -> Result<query::Pipeline<'static, SimilaritySingleEmbedding, Answered>> {
@@ -235,10 +229,12 @@ impl Pipeline {
         let fastembed = integrations::fastembed::FastEmbed::try_default()?;
         let reranker = fastembed::Rerank::builder().top_k(5).build()?;
 
+        let collection_name = format!("space-{}-idx", &self.space_key);
+
         let qdrant = Qdrant::builder()
             .batch_size(50)
             .vector_size(384)
-            .collection_name("flow-index")
+            .collection_name(collection_name)
             .build()?;
 
         // Build query pipeline with the stored config
@@ -427,8 +423,27 @@ impl PipelineManager {
         info!("Found {} spaces to initialize", spaces.len());
 
         for space_model in spaces {
-            self.initialize_space_pipeline(space_model.id, &space_model.key, &space_model.location)
-                .await?;
+            let index_status = SpaceIndexStatus::find()
+                .filter(space_index_status::Column::SpaceId.eq(space_model.id))
+                .one(&self.db)
+                .await
+                .map_err(|e| AppError::Storage(Box::new(e)))?;
+
+            self.initialize_space_pipeline(
+                space_model.id,
+                &space_model.key,
+                &space_model.location,
+                index_status,
+            )
+            .await?;
+
+            let manager = self.clone();
+            let space_key = space_model.key.clone();
+            tokio::spawn(async move {
+                if let Err(e) = manager.index_space(&space_key).await {
+                    error!("Failed to auto-index space {}: {}", space_key, e);
+                }
+            });
         }
 
         Ok(())
@@ -440,20 +455,46 @@ impl PipelineManager {
         space_id: i32,
         space_key: &str,
         location: &str,
+        index_status: Option<space_index_status::Model>,
     ) -> Result<(), AppError> {
         info!(
             "Initializing pipeline for space: {} at {}",
             space_key, location
         );
 
+        let index_status = if let Some(status) = index_status {
+            status
+        } else {
+            info!(
+                "No index status found for space {}, creating initial record",
+                space_key
+            );
+
+            let new_status = space_index_status::ActiveModel {
+                space_id: Set(space_id),
+                last_indexed: Set(None),
+                indexing_in_progress: Set(Some(false)),
+                files_indexed: Set(Some(0)),
+                chunks_stored: Set(Some(0)),
+                ..Default::default()
+            };
+
+            new_status
+                .insert(&self.db)
+                .await
+                .map_err(|e| AppError::Storage(Box::new(e)))?
+        };
+
         let space_pipeline = Pipeline {
             space_id,
             space_key: space_key.to_string(),
             location: location.to_string(),
-            last_indexed: None,
+            last_indexed: index_status
+                .last_indexed
+                .map(|dt| dt.with_timezone(&chrono::Utc)),
             indexing_in_progress: false,
             config: self.config.clone(),
-            metrics: PipelineMetrics::default(),
+            metrics: PipelineMetrics::from_model(&index_status),
         };
 
         self.pipelines

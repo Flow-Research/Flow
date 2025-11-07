@@ -1,4 +1,5 @@
 use crate::bootstrap::init::NodeData;
+use crate::modules::ai_pipeline::PipelineManager;
 use crate::modules::space;
 use crate::modules::ssi::webauthn;
 use crate::modules::ssi::webauthn::state::AuthState;
@@ -18,21 +19,29 @@ pub struct Node {
     pub db: DatabaseConnection,
     pub kv: Db,
     pub auth_state: AuthState,
+    pub pipeline_manager: PipelineManager,
 }
 
 impl Node {
-    pub fn new(node_data: NodeData, db: DatabaseConnection, kv: Db, auth_state: AuthState) -> Self {
+    pub fn new(
+        node_data: NodeData,
+        db: DatabaseConnection,
+        kv: Db,
+        auth_state: AuthState,
+        pipeline_manager: PipelineManager,
+    ) -> Self {
         Node {
             node_data,
             db,
             kv,
             auth_state,
+            pipeline_manager,
         }
     }
 
     pub async fn create_space(&self, dir: &str) -> Result<(), AppError> {
         info!("Setting up space in Directory: {}", dir);
-        space::new_space(&self.db, dir).await?;
+        space::new_space(dir, &self.db, &self.pipeline_manager).await?;
         Ok(())
     }
 

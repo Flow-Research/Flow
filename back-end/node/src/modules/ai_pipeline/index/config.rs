@@ -48,8 +48,8 @@ pub struct IndexingConfig {
 
 impl IndexingConfig {
     /// Load configuration from environment variables with sensible defaults
-    fn from_env() -> Result<Self> {
-        Ok(Self {
+    pub fn from_env() -> Result<Self> {
+        let config = Self {
             ai_api_key: "".to_string(),
 
             redis_url: std::env::var("REDIS_URL").ok(),
@@ -60,7 +60,7 @@ impl IndexingConfig {
             vector_size: std::env::var("VECTOR_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1536), // text-embedding-3-small
+                .unwrap_or(384),
 
             min_chunk_size: std::env::var("MIN_CHUNK_SIZE")
                 .ok()
@@ -131,7 +131,10 @@ impl IndexingConfig {
                         "venv".to_string(),
                     ]
                 }),
-        })
+        };
+        config.validate();
+
+        Ok(config)
     }
 
     fn validate(&self) -> Result<()> {

@@ -12,7 +12,13 @@ use entity::space;
 use sha2::{Digest, Sha256};
 use space::Entity as Space;
 
-pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppError> {
+use crate::modules::ai_pipeline::PipelineManager;
+
+pub async fn new_space(
+    dir: &str,
+    db: &DatabaseConnection,
+    pipeline_manager: &PipelineManager,
+) -> Result<(), AppError> {
     info!("Setting up space in directory: {}", dir);
 
     let path = Path::new(dir);
@@ -62,16 +68,30 @@ pub async fn new_space(db: &DatabaseConnection, dir: &str) -> Result<(), AppErro
         ..Default::default()
     };
 
-    match new_space.insert(db).await {
+    let result = match new_space.insert(db).await {
         Ok(space_model) => {
             info!(
                 "Successfully created space with ID: {}, Key: {}, Location: {}",
                 space_model.id, space_model.key, space_model.location
             );
+
+            pipeline_manager
+                .initialize_space_pipeline(
+                    space_model.id,
+                    &space_model.key,
+                    &space_model.location,
+                    None,
+                )
+                .await?;
+
+            pipeline_manager.index_space(&space_model.key).await?;
+
             Ok(())
         }
         Err(e) => Err(AppError::Storage(Box::new(e))),
-    }
+    };
+
+    result
 }
 
 fn generate_space_key(dir: &str) -> Result<String, AppError> {

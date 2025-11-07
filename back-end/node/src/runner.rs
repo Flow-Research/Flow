@@ -1,3 +1,5 @@
+use crate::modules::ai_pipeline::PipelineManager;
+use crate::modules::ai_pipeline::index::config::IndexingConfig;
 use crate::{
     api::{
         node::Node,
@@ -30,9 +32,20 @@ pub async fn run() -> Result<(), AppError> {
     // Set up KV Store
     let kv = setup_kv_store(&config).await?;
 
+    // Initialize Auth State
     let auth_state = AuthState::from_env()?;
 
-    let node = Node::new(node_data, db_conn, kv, auth_state);
+    // Initialize pipeline manager
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))?;
+    let pipeline_manager = PipelineManager::new(db_conn.clone(), indexing_config);
+
+    // Restore all pipelines from database
+    info!("Restoring pipelines for existing spaces...");
+    pipeline_manager.initialize_from_database().await?;
+    info!("Pipelines restored successfully.");
+
+    let node = Node::new(node_data, db_conn, kv, auth_state, pipeline_manager);
     let app_state = AppState::new(node);
 
     info!("Starting servers...");

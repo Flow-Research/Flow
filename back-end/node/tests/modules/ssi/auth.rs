@@ -5,11 +5,15 @@ use crate::{
     modules::ssi::fixtures::load_es256_passkey,
 };
 use base64::{Engine as _, prelude::BASE64_STANDARD};
+use errors::AppError;
 use log::info;
 use migration::{Migrator, MigratorTrait};
-use node::api::node::Node;
 use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
+use node::{
+    api::node::Node,
+    modules::ai_pipeline::{PipelineManager, index::config::IndexingConfig},
+};
 use sea_orm::{ColumnTrait, Database, QueryFilter};
 use tempfile::TempDir;
 use webauthn_authenticator_rs::{AuthenticatorBackend, softpasskey::SoftPasskey};
@@ -155,6 +159,11 @@ async fn test_start_registration_with_multiple_devices() {
         rp_name: "Test Flow".to_string(),
     };
 
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
     let node1 = Node::new(
         NodeData {
             id: "device-1".to_string(),
@@ -164,6 +173,7 @@ async fn test_start_registration_with_multiple_devices() {
         db.clone(),
         kv1,
         AuthState::new(auth_config.clone()).unwrap(),
+        pipeline_manager.clone(),
     );
 
     let node2 = Node::new(
@@ -175,6 +185,7 @@ async fn test_start_registration_with_multiple_devices() {
         db.clone(),
         kv2,
         AuthState::new(auth_config).unwrap(),
+        pipeline_manager,
     );
 
     // Execute: Start registration on both nodes
@@ -211,6 +222,11 @@ async fn test_end_to_end_registration_and_authentication() {
         rp_name: "Test Flow".to_string(),
     };
 
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
     let node = Node::new(
         NodeData {
             id: "test-device-e2e".to_string(),
@@ -220,6 +236,7 @@ async fn test_end_to_end_registration_and_authentication() {
         db.clone(),
         kv,
         AuthState::new(auth_config).unwrap(),
+        pipeline_manager,
     );
 
     // ===== REGISTRATION FLOW =====

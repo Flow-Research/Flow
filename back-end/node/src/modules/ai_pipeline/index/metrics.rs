@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use entity::space_index_status;
 use tracing::info;
 
 /// Metrics for tracking pipeline progress
@@ -23,6 +24,20 @@ impl PipelineMetrics {
             files_failed: Arc::new(AtomicUsize::new(0)),
             chunks_created: Arc::new(AtomicUsize::new(0)),
             chunks_stored: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn from_model(index_status: &space_index_status::Model) -> Self {
+        Self {
+            files_loaded: Arc::new(AtomicUsize::new(
+                index_status.files_indexed.unwrap_or(0) as usize
+            )),
+            files_skipped: Arc::new(AtomicUsize::new(0)),
+            files_failed: Arc::new(AtomicUsize::new(0)),
+            chunks_created: Arc::new(AtomicUsize::new(0)),
+            chunks_stored: Arc::new(AtomicUsize::new(
+                index_status.chunks_stored.unwrap_or(0) as usize
+            )),
         }
     }
 
