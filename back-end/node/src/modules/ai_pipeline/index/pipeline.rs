@@ -5,6 +5,5 @@ pub struct Pipeline {}
 impl Pipeline {
     pub fn start() {
         let pipeline = indexing::Pipeline::from_loader(FileLoader::new("./"));
-        pipeline.then(MetadataQACode::new(openai_client.clone()));
     }
 }

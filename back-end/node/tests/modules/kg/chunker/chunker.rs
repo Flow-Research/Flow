@@ -1,6 +1,6 @@
-use node::modules::kg::chunker::chunker::Chunker;
-use node::modules::kg::chunker::config::ChunkerConfig;
-use node::modules::kg::chunker::types::{
+use node::modules::ai_pipeline::chunker::chunker::Chunker;
+use node::modules::ai_pipeline::chunker::config::ChunkerConfig;
+use node::modules::ai_pipeline::chunker::types::{
     Chunk, ChunkMetadata, ChunkerError, ChunkingStrategy, ContentType,
 };
 

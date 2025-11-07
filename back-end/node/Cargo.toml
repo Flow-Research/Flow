@@ -58,7 +58,9 @@ candle-nn = "0.9.1"
 candle-transformers = "0.9.1"
 hf-hub = "0.4.3"
 text-splitter = { version = "0.28.0", features = ["markdown"] }
-swiftide = { version = "0.31.3", features = [ "ollama" ] }
+swiftide = { version = "=0.31.0", features = ["all"] }
+swiftide-integrations = "=0.31.0"
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 futures-util = "0.3.31"
