@@ -44,6 +44,10 @@ pub struct IndexingConfig {
 
     /// File patterns to exclude
     pub exclude_patterns: Vec<String>,
+
+    pub max_failure_rate: f64,
+
+    pub min_sample_size: usize,
 }
 
 impl IndexingConfig {
@@ -131,6 +135,16 @@ impl IndexingConfig {
                         "venv".to_string(),
                     ]
                 }),
+
+            max_failure_rate: std::env::var("MAX_FAILURE_RATE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.5),
+
+            min_sample_size: std::env::var("MIN_SAMPLE_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
         };
         config.validate();
 
@@ -144,6 +158,10 @@ impl IndexingConfig {
 
         if self.embed_batch_size == 0 || self.storage_batch_size == 0 {
             return Err(anyhow!("Batch sizes must be greater than 0"));
+        }
+
+        if self.max_failure_rate <= 0.0 || self.max_failure_rate > 1.0 {
+            return Err(anyhow!("MAX_FAILURE_RATE must be between 0 and 1"));
         }
 
         Ok(())

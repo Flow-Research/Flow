@@ -12,7 +12,7 @@ use entity::space;
 use sha2::{Digest, Sha256};
 use space::Entity as Space;
 
-use crate::modules::ai_pipeline::PipelineManager;
+use crate::modules::ai::PipelineManager;
 
 pub async fn new_space(
     dir: &str,

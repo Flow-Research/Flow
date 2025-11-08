@@ -13,6 +13,9 @@ pub struct Model {
     pub indexing_in_progress: Option<bool>,
     pub files_indexed: Option<i32>,
     pub chunks_stored: Option<i32>,
+    pub files_failed: Option<i32>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub last_error: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

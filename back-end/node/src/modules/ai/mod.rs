@@ -34,7 +34,46 @@ use tokio::sync::RwLock;
 use index::config::IndexingConfig;
 use tracing::{debug, error, info, warn};
 
+use crate::modules::ai::index::metrics::ThresholdStatus;
+
 pub type PipelineHandle = String;
+
+enum ValidationResult {
+    Accept,
+    Skip(SkipReason),
+}
+
+enum SkipReason {
+    TooLarge { size: usize, max: usize },
+    Binary,
+    ExcludedPattern(String),
+    TooSmall,
+}
+
+impl SkipReason {
+    fn log(&self, node: &indexing::Node<String>) {
+        match self {
+            Self::TooLarge { size, max } => {
+                warn!(
+                    "Skipping large file: {:?} ({} bytes > {} max)",
+                    node.path, size, max
+                );
+            }
+            Self::Binary => {
+                warn!("Skipping likely binary file: {:?}", node.path);
+            }
+            Self::ExcludedPattern(pattern) => {
+                debug!(
+                    "Skipping excluded path (pattern: {}): {:?}",
+                    pattern, node.path
+                );
+            }
+            Self::TooSmall => {
+                debug!("Skipping empty/small file: {:?}", node.path);
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Pipeline {
@@ -48,26 +87,58 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub async fn build_indexing_pipeline(&self) -> Result<indexing::Pipeline<String>> {
-        let collection_name = format!("space-{}-idx", &self.space_key);
-
-        // Initialize OpenAI client with retry logic
-        let ollama_client = integrations::ollama::Ollama::default()
+    fn llm_client(&self) -> integrations::ollama::Ollama {
+        integrations::ollama::Ollama::default()
             .with_default_prompt_model("llama3.1:8b")
-            .to_owned();
+            .to_owned()
+    }
 
-        // Wrap with backoff for rate limit handling
-        let ollama_with_backoff =
-            indexing::LanguageModelWithBackOff::new(ollama_client.clone(), Default::default());
-
-        // Initialize Qdrant storage
-        let qdrant = integrations::qdrant::Qdrant::builder()
+    fn qdrant(&self, collection_name: String) -> Result<integrations::qdrant::Qdrant> {
+        integrations::qdrant::Qdrant::builder()
             .batch_size(self.config.storage_batch_size)
             .vector_size(self.config.vector_size as u64)
-            .collection_name(collection_name.clone())
-            .build()?;
+            .collection_name(collection_name)
+            .build()
+    }
 
-        // Initialize file loader
+    fn collection_name(&self) -> String {
+        format!("space-{}-idx", &self.space_key)
+    }
+
+    fn validate_file(&self, node: &indexing::Node<String>) -> ValidationResult {
+        // Check file size
+        if node.original_size > self.config.max_file_size {
+            return ValidationResult::Skip(SkipReason::TooLarge {
+                size: node.original_size,
+                max: self.config.max_file_size,
+            });
+        }
+
+        // Check if file is likely binary
+        if is_likely_binary(&node.chunk) {
+            return ValidationResult::Skip(SkipReason::Binary);
+        }
+
+        // Check exclude patterns
+        let path_str = node.path.to_string_lossy();
+        for pattern in &self.config.exclude_patterns {
+            if path_str.contains(pattern) {
+                return ValidationResult::Skip(SkipReason::ExcludedPattern(pattern.clone()));
+            }
+        }
+
+        // Check if content is empty or too small
+        let trimmed = node.chunk.trim();
+        if trimmed.is_empty() || trimmed.len() < self.config.min_chunk_size {
+            return ValidationResult::Skip(SkipReason::TooSmall);
+        }
+
+        ValidationResult::Accept
+    }
+
+    // ============== Pipeline Stages ==============
+
+    fn create_file_loader(&self) -> indexing::loaders::FileLoader {
         let mut loader = indexing::loaders::FileLoader::new(&self.location);
 
         if let Some(extensions) = &self.config.allowed_extensions {
@@ -75,15 +146,14 @@ impl Pipeline {
                 loader.with_extensions(&extensions.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
 
-        // Start building the pipeline
-        let mut pipeline =
-            indexing::Pipeline::from_loader(loader).with_concurrency(self.config.concurrency);
+        loader
+    }
 
-        // Add caching if Redis is configured
+    fn add_caching(&self, mut pipeline: indexing::Pipeline<String>) -> indexing::Pipeline<String> {
         if let Some(redis_url) = &self.config.redis_url {
             match integrations::redis::Redis::try_from_url(
                 redis_url.clone(),
-                collection_name.clone(),
+                self.collection_name(),
             ) {
                 Ok(cache) => {
                     info!("Redis caching enabled");
@@ -97,92 +167,78 @@ impl Pipeline {
                 }
             }
         }
+        pipeline
+    }
 
-        // Apply filters and validation
-        let config_clone = self.config.clone();
-        let metrics_clone = self.metrics.clone();
-        pipeline = pipeline
+    fn add_validation_filter(
+        &self,
+        pipeline: indexing::Pipeline<String>,
+    ) -> indexing::Pipeline<String> {
+        let metrics = self.metrics.clone();
+        let config = self.config.clone();
+        let check_interval = 100;
+
+        let self_clone = self.clone();
+
+        pipeline
             .filter(move |result| {
-                let should_process = match result {
-                    Ok(node) => {
-                        // Check file size
-                        if node.original_size > config_clone.max_file_size {
-                            warn!(
-                                "Skipping large file: {:?} ({} bytes > {} max)",
-                                node.path, node.original_size, config_clone.max_file_size
-                            );
-                            metrics_clone.files_skipped.fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
+                // Check threshold status
+                let status = metrics.check_realtime_threshold(&config, check_interval);
+                if matches!(status, ThresholdStatus::Catastrophic) {
+                    warn!("Catastrophic threshold status reached");
+                }
 
-                        // Check if file is likely binary
-                        if is_likely_binary(&node.chunk) {
-                            warn!("Skipping likely binary file: {:?}", node.path);
-                            metrics_clone.files_skipped.fetch_add(1, Ordering::Relaxed);
-                            return false;
+                match result {
+                    Ok(node) => match self_clone.validate_file(node) {
+                        ValidationResult::Accept => {
+                            metrics.files_loaded.fetch_add(1, Ordering::Relaxed);
+                            true
                         }
-
-                        // Check exclude patterns
-                        let path_str = &node.path.to_string_lossy();
-                        for pattern in &config_clone.exclude_patterns {
-                            if path_str.contains(pattern) {
-                                debug!("Skipping excluded path: {:?}", &node.path);
-                                metrics_clone.files_skipped.fetch_add(1, Ordering::Relaxed);
-                                return false;
-                            }
+                        ValidationResult::Skip(reason) => {
+                            reason.log(node);
+                            metrics.files_skipped.fetch_add(1, Ordering::Relaxed);
+                            false
                         }
-
-                        // Check if content is empty or too small
-                        let trimmed = node.chunk.trim();
-                        if trimmed.is_empty() || trimmed.len() < config_clone.min_chunk_size {
-                            debug!("Skipping empty/small file: {:?}", node.path);
-                            metrics_clone.files_skipped.fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-
-                        metrics_clone.files_loaded.fetch_add(1, Ordering::Relaxed);
-                        true
-                    }
+                    },
                     Err(e) => {
                         error!("Error loading file: {:#}", e);
-                        metrics_clone.files_failed.fetch_add(1, Ordering::Relaxed);
-                        false // Skip errors but continue processing
+                        metrics.files_failed.fetch_add(1, Ordering::Relaxed);
+                        false
                     }
-                };
-                should_process
+                }
             })
-            .log_errors();
+            .log_errors()
+    }
 
-        // Add rate limiting
-        if self.config.rate_limit_ms > 0 {
-            pipeline = pipeline.throttle(Duration::from_millis(self.config.rate_limit_ms));
-        }
-
+    fn add_chunking(&self, mut pipeline: indexing::Pipeline<String>) -> indexing::Pipeline<String> {
         // Apply smart chunking
         let chunker = SmartChunker::new(self.config.min_chunk_size..self.config.max_chunk_size);
         pipeline = pipeline.then_chunk(chunker);
 
-        // Filter out failed chunks
-        let metrics_clone = self.metrics.clone();
-        pipeline = pipeline.filter(move |result| {
-            match result {
-                Ok(node) => {
-                    if node.chunk.trim().is_empty() {
-                        debug!("Filtering empty chunk from {:?}", node.path);
-                        false
-                    } else {
-                        metrics_clone.chunks_created.fetch_add(1, Ordering::Relaxed);
-                        true
-                    }
-                }
-                Err(e) => {
-                    warn!("Chunk creation failed: {:#}", e);
-                    false // Don't fail the whole pipeline
+        // Filter empty chunks
+        let metrics = self.metrics.clone();
+        pipeline.filter(move |result| match result {
+            Ok(node) => {
+                if node.chunk.trim().is_empty() {
+                    debug!("Filtering empty chunk from {:?}", node.path);
+                    false
+                } else {
+                    metrics.chunks_created.fetch_add(1, Ordering::Relaxed);
+                    true
                 }
             }
-        });
+            Err(e) => {
+                warn!("Chunk creation failed: {:#}", e);
+                false
+            }
+        })
+    }
 
-        // Add metadata generation
+    fn add_metadata_generation(
+        &self,
+        mut pipeline: indexing::Pipeline<String>,
+        ollama_with_backoff: indexing::LanguageModelWithBackOff<integrations::ollama::Ollama>,
+    ) -> indexing::Pipeline<String> {
         if self.config.enable_metadata_qa {
             info!("Enabling Q&A metadata generation");
             pipeline = pipeline.then(MetadataQAText::new(ollama_with_backoff.clone()));
@@ -198,46 +254,71 @@ impl Pipeline {
             pipeline = pipeline.then(MetadataKeywords::new(ollama_with_backoff.clone()));
         }
 
+        pipeline
+    }
+
+    fn add_embedding_and_storage(
+        &self,
+        mut pipeline: indexing::Pipeline<String>,
+        ollama_with_backoff: indexing::LanguageModelWithBackOff<integrations::ollama::Ollama>,
+        qdrant: integrations::qdrant::Qdrant,
+    ) -> indexing::Pipeline<String> {
         // Embed in batches
         pipeline = pipeline.then_in_batch(
             Embed::new(ollama_with_backoff).with_batch_size(self.config.embed_batch_size),
         );
 
         // Count stored chunks
-        let metrics_clone = self.metrics.clone();
+        let metrics = self.metrics.clone();
         pipeline = pipeline.log_nodes().filter(move |result| {
             if result.is_ok() {
-                metrics_clone.chunks_stored.fetch_add(1, Ordering::Relaxed);
+                metrics.chunks_stored.fetch_add(1, Ordering::Relaxed);
             }
             true
         });
 
         // Store in Qdrant
-        pipeline = pipeline.then_store_with(qdrant);
+        pipeline.then_store_with(qdrant)
+    }
 
-        // Run the pipeline
+    pub async fn build_indexing_pipeline(&self) -> Result<indexing::Pipeline<String>> {
+        let collection_name = self.collection_name();
+
+        // Initialize shared clients
+        let ollama_client = self.llm_client();
+        let ollama_with_backoff =
+            indexing::LanguageModelWithBackOff::new(ollama_client.clone(), Default::default());
+        let qdrant = self.qdrant(collection_name)?;
+
+        // Build pipeline in stages
+        let loader = self.create_file_loader();
+        let mut pipeline =
+            indexing::Pipeline::from_loader(loader).with_concurrency(self.config.concurrency);
+
+        pipeline = self.add_caching(pipeline);
+        pipeline = self.add_validation_filter(pipeline);
+
+        // Add rate limiting
+        if self.config.rate_limit_ms > 0 {
+            pipeline = pipeline.throttle(Duration::from_millis(self.config.rate_limit_ms));
+        }
+
+        pipeline = self.add_chunking(pipeline);
+        pipeline = self.add_metadata_generation(pipeline, ollama_with_backoff.clone());
+        pipeline = self.add_embedding_and_storage(pipeline, ollama_with_backoff, qdrant);
+
         Ok(pipeline)
     }
 
     pub async fn build_query_pipeline(
         &self,
     ) -> Result<query::Pipeline<'static, SimilaritySingleEmbedding, Answered>> {
-        let ollama_client = integrations::ollama::Ollama::default()
-            .with_default_prompt_model("llama3.1:8b")
-            .to_owned();
-
+        let ollama_client = self.llm_client();
         let fastembed = integrations::fastembed::FastEmbed::try_default()?;
         let reranker = fastembed::Rerank::builder().top_k(5).build()?;
+        let collection_name = self.collection_name();
+        let qdrant = self.qdrant(collection_name)?;
 
-        let collection_name = format!("space-{}-idx", &self.space_key);
-
-        let qdrant = Qdrant::builder()
-            .batch_size(50)
-            .vector_size(384)
-            .collection_name(collection_name)
-            .build()?;
-
-        // Build query pipeline with the stored config
         Ok(query::Pipeline::default()
             .then_transform_query(query_transformers::GenerateSubquestions::from_client(
                 ollama_client.clone(),
@@ -520,27 +601,27 @@ impl PipelineManager {
         }
 
         pipeline.indexing_in_progress = true;
-        let space_key_clone = space_key.to_string();
 
         drop(pipelines); // Release lock before long operation
 
         // Run indexing in background
-        let manager_clone = self.clone();
-        tokio::spawn(async move {
-            match manager_clone.run_indexing(&space_key_clone).await {
-                Ok(_) => {
-                    info!("Indexing completed for space: {}", space_key_clone);
-                    let mut pipelines = manager_clone.pipelines.write().await;
-                    if let Some(p) = pipelines.get_mut(&space_key_clone) {
-                        p.indexing_in_progress = false;
-                        p.last_indexed = Some(chrono::Utc::now());
-                    }
+        tokio::spawn({
+            let manager_clone = self.clone();
+            let space_key = space_key.to_string();
+
+            async move {
+                let res = manager_clone.run_indexing(&space_key).await;
+
+                match &res {
+                    Ok(_) => info!("Indexing completed for space: {}", space_key),
+                    Err(e) => error!("Indexing failed for space {}: {}", space_key, e),
                 }
-                Err(e) => {
-                    error!("Indexing failed for space {}: {}", space_key_clone, e);
-                    let mut pipelines = manager_clone.pipelines.write().await;
-                    if let Some(p) = pipelines.get_mut(&space_key_clone) {
-                        p.indexing_in_progress = false;
+
+                let mut pipelines = manager_clone.pipelines.write().await;
+                if let Some(p) = pipelines.get_mut(&space_key) {
+                    p.indexing_in_progress = false;
+                    if res.is_ok() {
+                        p.last_indexed = Some(chrono::Utc::now());
                     }
                 }
             }
@@ -550,62 +631,67 @@ impl PipelineManager {
     }
 
     async fn run_indexing(&self, space_key: &str) -> Result<(), AppError> {
-        let pipeline = self.build_index_pipeline(space_key).await?;
+        info!("Starting indexing");
+
+        let (pipeline_struct, indexing_pipeline) = {
+            let pipelines = self.pipelines.read().await;
+            let pipeline = pipelines
+                .get(space_key)
+                .ok_or_else(|| AppError::NotFound(format!("Space not found: {}", space_key)))?;
+
+            let pipeline_struct = pipeline.clone();
+
+            // Build the indexing pipeline while we have the lock
+            let indexing_pipeline = pipeline.build_indexing_pipeline().await.map_err(|e| {
+                AppError::Internal(format!("Failed to build indexing pipeline: {}", e))
+            })?;
+
+            (pipeline_struct, indexing_pipeline)
+        };
 
         // Run the indexing pipeline
-        pipeline
+        indexing_pipeline
             .run()
             .await
             .map_err(|e| AppError::Internal(format!("Indexing failed: {}", e)))?;
 
-        Ok(())
-    }
+        // VALIDATION: Check failure threshold
+        let metrics = &pipeline_struct.metrics;
 
-    async fn build_index_pipeline(
-        &self,
-        space_key: &str,
-    ) -> Result<indexing::Pipeline<String>, AppError> {
-        let pipelines = self.pipelines.read().await;
-        let pipeline = pipelines
-            .get(space_key)
-            .ok_or_else(|| AppError::NotFound(format!("Space not found: {}", space_key)))?;
+        if let Err(msg) = metrics.validate_threshold(&pipeline_struct.config) {
+            error!("Indexing failed for space '{}': {}", space_key, msg);
 
-        // Build the indexing pipeline using the Pipeline's method
-        pipeline
-            .build_indexing_pipeline()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to build indexing pipeline: {}", e)))
-    }
+            // Update DB with failed status
+            self.update_index_status(space_key, metrics, Some(&msg))
+                .await?;
 
-    async fn build_query_pipeline(
-        &self,
-        space_key: &str,
-    ) -> Result<query::Pipeline<'static, SimilaritySingleEmbedding, Answered>, AppError> {
-        let pipelines = self.pipelines.read().await;
-        let pipeline = pipelines
-            .get(space_key)
-            .ok_or_else(|| AppError::NotFound(format!("Space not found: {}", space_key)))?;
+            return Err(AppError::Internal(format!(
+                "Indexing validation failed: {}",
+                msg
+            )));
+        } else {
+            // Success
+            info!("Indexing completed successfully for space '{}'", space_key);
+            self.update_index_status(space_key, metrics, None).await?;
 
-        // Build the indexing pipeline using the Pipeline's method
-        pipeline
-            .build_query_pipeline()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to build indexing pipeline: {}", e)))
+            Ok(())
+        }
     }
 
     pub async fn query_space(&self, space_key: &str, query: &str) -> Result<String, AppError> {
         // Verify the space exists
-        let pipelines = self.pipelines.read().await;
-        if !pipelines.contains_key(space_key) {
-            return Err(AppError::NotFound(format!(
-                "Space not found: {}",
-                space_key
-            )));
-        }
-        drop(pipelines);
+        let query_pipeline = {
+            let pipelines = self.pipelines.read().await;
+            let pipeline = pipelines
+                .get(space_key)
+                .ok_or_else(|| AppError::NotFound(format!("Space not found: {}", space_key)))?;
 
-        // Build a fresh query pipeline (can't be stored due to lifetimes)
-        let query_pipeline = self.build_query_pipeline(space_key).await?;
+            // Build the query pipeline while we have the lock
+            pipeline
+                .build_query_pipeline()
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to build query pipeline: {}", e)))?
+        }; // Lock released here
 
         // Execute the query
         let answer = query_pipeline
@@ -614,5 +700,102 @@ impl PipelineManager {
             .map_err(|e| AppError::Internal(format!("Query failed: {}", e)))?;
 
         Ok(answer.answer().to_string())
+    }
+
+    async fn update_index_status(
+        &self,
+        space_key: &str,
+        metrics: &PipelineMetrics,
+        error: Option<&str>,
+    ) -> Result<(), AppError> {
+        use entity::space_index_status;
+        use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+
+        // Find the space by key
+        let space = space::Entity::find()
+            .filter(space::Column::Key.eq(space_key))
+            .one(&self.db)
+            .await
+            .map_err(|e| AppError::Storage(Box::new(e)))?
+            .ok_or_else(|| AppError::NotFound(format!("Space not found: {}", space_key)))?;
+
+        // Find the existing index status
+        let status = space_index_status::Entity::find()
+            .filter(space_index_status::Column::SpaceId.eq(space.id))
+            .one(&self.db)
+            .await
+            .map_err(|e| AppError::Storage(Box::new(e)))?;
+
+        if let Some(status) = status {
+            let mut active_status: space_index_status::ActiveModel = status.into();
+
+            active_status.indexing_in_progress = Set(Some(false));
+            active_status.files_indexed =
+                Set(Some(metrics.files_loaded.load(Ordering::Relaxed) as i32));
+            active_status.chunks_stored =
+                Set(Some(metrics.chunks_stored.load(Ordering::Relaxed) as i32));
+
+            active_status.files_failed =
+                Set(Some(metrics.files_failed.load(Ordering::Relaxed) as i32));
+
+            if let Some(error_msg) = error {
+                active_status.last_error = Set(Some(error_msg.to_string()));
+
+                warn!(
+                    space_key = %space_key,
+                    files_loaded = metrics.files_loaded.load(Ordering::Relaxed),
+                    files_failed = metrics.files_failed.load(Ordering::Relaxed),
+                    failure_rate = %format!("{:.1}%", metrics.failure_rate() * 100.0),
+                    error = %error_msg,
+                    "Updated index status with failure"
+                );
+            } else {
+                active_status.last_indexed = Set(Some(chrono::Utc::now().fixed_offset()));
+                active_status.last_error = Set(None);
+
+                info!(
+                    space_key = %space_key,
+                    files_indexed = metrics.files_loaded.load(Ordering::Relaxed),
+                    chunks_stored = metrics.chunks_stored.load(Ordering::Relaxed),
+                    files_skipped = metrics.files_skipped.load(Ordering::Relaxed),
+                    "Updated index status with success"
+                );
+            }
+
+            // Persist to database
+            active_status
+                .update(&self.db)
+                .await
+                .map_err(|e| AppError::Storage(Box::new(e)))?;
+        } else {
+            // No existing status record - create one
+            warn!(
+                space_key = %space_key,
+                space_id = space.id,
+                "No index status found, creating new record"
+            );
+
+            let new_status = space_index_status::ActiveModel {
+                space_id: Set(space.id),
+                last_indexed: Set(if error.is_none() {
+                    Some(chrono::Utc::now().fixed_offset())
+                } else {
+                    None
+                }),
+                indexing_in_progress: Set(Some(false)),
+                files_indexed: Set(Some(metrics.files_loaded.load(Ordering::Relaxed) as i32)),
+                chunks_stored: Set(Some(metrics.chunks_stored.load(Ordering::Relaxed) as i32)),
+                files_failed: Set(Some(metrics.files_failed.load(Ordering::Relaxed) as i32)),
+                last_error: Set(error.map(|e| e.to_string())),
+                ..Default::default()
+            };
+
+            new_status
+                .insert(&self.db)
+                .await
+                .map_err(|e| AppError::Storage(Box::new(e)))?;
+        }
+
+        Ok(())
     }
 }

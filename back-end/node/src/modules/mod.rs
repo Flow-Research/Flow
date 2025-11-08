@@ -1,3 +1,3 @@
-pub mod ai_pipeline;
+pub mod ai;
 pub mod space;
 pub mod ssi;

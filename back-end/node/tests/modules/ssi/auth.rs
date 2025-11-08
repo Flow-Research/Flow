@@ -12,7 +12,7 @@ use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
 use node::{
     api::node::Node,
-    modules::ai_pipeline::{PipelineManager, index::config::IndexingConfig},
+    modules::ai::{PipelineManager, index::config::IndexingConfig},
 };
 use sea_orm::{ColumnTrait, Database, QueryFilter};
 use tempfile::TempDir;

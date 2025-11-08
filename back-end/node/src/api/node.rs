@@ -1,5 +1,5 @@
 use crate::bootstrap::init::NodeData;
-use crate::modules::ai_pipeline::PipelineManager;
+use crate::modules::ai::PipelineManager;
 use crate::modules::space;
 use crate::modules::ssi::webauthn;
 use crate::modules::ssi::webauthn::state::AuthState;

@@ -36,7 +36,7 @@ struct Paths {
     pub_key_file: PathBuf,
 }
 
-pub fn initialize() -> Result<NodeData, AppError> {
+pub async fn initialize() -> Result<NodeData, AppError> {
     let config_dir = get_flow_config_dir();
     initialize_config_dir(&config_dir)
 }
