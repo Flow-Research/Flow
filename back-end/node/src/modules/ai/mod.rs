@@ -1,3 +1,4 @@
+pub mod api;
 pub mod index;
 
 use std::{
@@ -260,13 +261,14 @@ impl Pipeline {
     fn add_embedding_and_storage(
         &self,
         mut pipeline: indexing::Pipeline<String>,
-        ollama_with_backoff: indexing::LanguageModelWithBackOff<integrations::ollama::Ollama>,
         qdrant: integrations::qdrant::Qdrant,
     ) -> indexing::Pipeline<String> {
+        let fastembed = integrations::fastembed::FastEmbed::try_default()
+            .expect("Failed to initialize FastEmbed");
+
         // Embed in batches
-        pipeline = pipeline.then_in_batch(
-            Embed::new(ollama_with_backoff).with_batch_size(self.config.embed_batch_size),
-        );
+        pipeline = pipeline
+            .then_in_batch(Embed::new(fastembed).with_batch_size(self.config.embed_batch_size));
 
         // Count stored chunks
         let metrics = self.metrics.clone();
@@ -305,7 +307,8 @@ impl Pipeline {
 
         pipeline = self.add_chunking(pipeline);
         pipeline = self.add_metadata_generation(pipeline, ollama_with_backoff.clone());
-        pipeline = self.add_embedding_and_storage(pipeline, ollama_with_backoff, qdrant);
+        pipeline = self.add_embedding_and_storage(pipeline, qdrant);
+        pipeline = pipeline.log_all();
 
         Ok(pipeline)
     }

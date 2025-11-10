@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use crate::{api::servers::app_state::AppState, bootstrap::config::Config};
 use axum::{
     Router,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderValue, Method, StatusCode},
     response::Json,
     routing::{get, post},
@@ -31,26 +33,32 @@ pub fn build_router(app_state: AppState) -> Router {
         // Cache preflight requests for 1 hour
         .max_age(std::time::Duration::from_secs(3600));
 
+    let API_BASE: &str = "/api/v1";
+
     // Configure Router
     Router::new()
         .route(
-            "/api/v1/webauthn/start_registration",
+            format!("{}/webauthn/start_registration", API_BASE).as_str(),
             get(start_webauthn_registration),
         )
         .route(
-            "/api/v1/webauthn/finish_registration",
+            format!("{}/webauthn/finish_registration", API_BASE).as_str(),
             post(finish_webauthn_registration),
         )
         .route(
-            "/api/v1/webauthn/start_authentication",
+            format!("{}/webauthn/start_authentication", API_BASE).as_str(),
             post(start_webauthn_authentication),
         )
         .route(
-            "/api/v1/webauthn/finish_authentication",
+            format!("{}/webauthn/finish_authentication", API_BASE).as_str(),
             post(finish_webauthn_authentication),
         )
-        .route("/api/v1/spaces", post(create_space))
-        .route("/api/v1/health", get(health_check))
+        .route(format!("{}/spaces", API_BASE).as_str(), post(create_space))
+        .route(format!("{}/health", API_BASE).as_str(), get(health_check))
+        .route(
+            format!("{}/spaces/search", API_BASE).as_str(),
+            get(query_space),
+        )
         .with_state(app_state)
         .layer(cors)
 }
@@ -206,6 +214,28 @@ async fn create_space(
 
     match node.create_space(dir).await {
         Ok(_) => Ok(Json(json!({"status": "success"}))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn query_space(
+    State(app_state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let space_key = params
+        .get("space_key")
+        .ok_or((StatusCode::BAD_REQUEST, "space_key is required".to_string()))?;
+    let query = params
+        .get("query")
+        .ok_or((StatusCode::BAD_REQUEST, "query is required".to_string()))?;
+
+    let node = app_state.node.read().await;
+
+    match node.query_space(space_key, query).await {
+        Ok(response) => Ok(Json(json!({
+            "status": "success",
+            "response": response
+        }))),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }

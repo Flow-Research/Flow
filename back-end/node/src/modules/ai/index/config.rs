@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use sea_orm::Iden;
 
 #[derive(Clone, Debug)]
 pub struct IndexingConfig {
@@ -56,7 +57,9 @@ impl IndexingConfig {
         let config = Self {
             ai_api_key: "".to_string(),
 
-            redis_url: std::env::var("REDIS_URL").ok(),
+            redis_url: std::env::var("REDIS_URL")
+                .ok()
+                .or(Some("redis://localhost:6379".to_string())),
 
             qdrant_url: std::env::var("QDRANT_URL")
                 .unwrap_or_else(|_| "http://localhost:6334".to_string()),
@@ -109,12 +112,12 @@ impl IndexingConfig {
             enable_metadata_summary: std::env::var("ENABLE_METADATA_SUMMARY")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(false),
+                .unwrap_or(true),
 
             enable_metadata_keywords: std::env::var("ENABLE_METADATA_KEYWORDS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(false),
+                .unwrap_or(true),
 
             allowed_extensions: std::env::var("ALLOWED_EXTENSIONS")
                 .ok()
@@ -146,7 +149,7 @@ impl IndexingConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10),
         };
-        config.validate();
+        config.validate()?;
 
         Ok(config)
     }

@@ -84,7 +84,16 @@ pub async fn new_space(
                 )
                 .await?;
 
-            pipeline_manager.index_space(&space_model.key).await?;
+            // Start indexing in background - don't fail if it can't start
+            match pipeline_manager.index_space(&space_model.key).await {
+                Ok(_) => info!("Indexing started for space: {}", space_model.key),
+                Err(e) => {
+                    warn!(
+                        "Failed to start indexing for space {}: {}. You can manually trigger it later.",
+                        space_model.key, e
+                    );
+                }
+            }
 
             Ok(())
         }
