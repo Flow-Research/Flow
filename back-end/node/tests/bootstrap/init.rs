@@ -13,7 +13,7 @@ use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
 use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tempfile::TempDir;
 
 /// Test server container with access to all components
@@ -49,7 +49,11 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
     // Setup database
     let db_path = temp_dir.path().join("test.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-    let db = Database::connect(&db_url).await.unwrap();
+
+    let mut opt = ConnectOptions::new(&db_url);
+    opt.max_connections(50).min_connections(40);
+
+    let db = Database::connect(opt).await.unwrap();
     Migrator::up(&db, None).await.unwrap();
 
     // Setup KV store
