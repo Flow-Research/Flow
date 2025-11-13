@@ -2,3 +2,6 @@
 .env
 .env.local
 .env.*.local
+**/.fastembed_cache
+**/qdrant_data
+**/redis_data

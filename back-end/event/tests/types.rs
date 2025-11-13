@@ -123,8 +123,6 @@ fn test_event_canonical_bytes_excludes_signature() {
     let canonical_str = String::from_utf8(canonical).unwrap();
 
     // Should contain these fields
-    assert!(canonical_str.contains("stream_id"));
-    assert!(canonical_str.contains("space_id"));
     assert!(canonical_str.contains("payload"));
 
     // Should NOT contain signature fields
@@ -159,7 +157,7 @@ fn test_event_compute_hash() {
 
 #[test]
 fn test_event_compute_hash_changes_with_content() {
-    let mut event1 = create_test_event();
+    let event1 = create_test_event();
     let mut event2 = create_test_event();
 
     event2.payload = json!({"different": "payload"});
@@ -243,7 +241,6 @@ fn test_event_serialization_roundtrip() {
     let deserialized: Event = serde_json::from_str(&json).unwrap();
 
     assert_eq!(event.id, deserialized.id);
-    assert_eq!(event.stream_id, deserialized.stream_id);
     assert_eq!(event.signer, deserialized.signer);
     assert_eq!(event.sig, deserialized.sig);
 }
@@ -253,8 +250,6 @@ fn test_event_serialization_roundtrip() {
 fn create_test_event() -> Event {
     Event {
         id: Ulid::new(),
-        stream_id: "test_stream".to_string(),
-        space_id: "test_space".to_string(),
         event_type: "TestEvent".to_string(),
         schema_version: 1,
         payload: json!({"message": "test", "count": 42}),

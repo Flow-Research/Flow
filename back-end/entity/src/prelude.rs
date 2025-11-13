@@ -2,4 +2,5 @@
 
 pub use super::pass_key::Entity as PassKey;
 pub use super::space::Entity as Space;
+pub use super::space_index_status::Entity as SpaceIndexStatus;
 pub use super::user::Entity as User;

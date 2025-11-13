@@ -22,4 +22,13 @@ pub enum AppError {
 
     #[error("Migration failed: {0}")]
     Migration(Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("Not Found Error: {0}")]
+    NotFound(String),
+
+    #[error("Conflict encountered: {0}")]
+    Conflict(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }

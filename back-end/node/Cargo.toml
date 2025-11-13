@@ -9,7 +9,6 @@ directories = "6.0.0"
 dotenvy = "0.15.7"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 env_logger = "0.11.8"
-log = "0.4.27"
 multibase = "0.9.1"
 rand = "0.8"
 sha2 = "0.10.9"
@@ -46,9 +45,25 @@ percent-encoding = "2.3.2"
 ctor = "0.6.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
+tokenizers = { version = "0.22.1", features = ["http"] }
+tiktoken-rs = "0.7.0"
+unicode-segmentation = "1.12.0"
+regex = "1.12.2"
+lingua = "1.7.2"
+whatlang = "0.18.0"
+anyhow = "1.0.100"
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+candle-transformers = "0.9.1"
+hf-hub = "0.4.3"
+text-splitter = { version = "0.28.0", features = ["markdown"] }
+swiftide = { version = "=0.31.0", features = ["all"] }
+swiftide-integrations = "=0.31.0"
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 futures-util = "0.3.31"
 reqwest = "0.12.24"
 tokio-tungstenite = "0.28.0"
 tungstenite = "0.28.0"
+

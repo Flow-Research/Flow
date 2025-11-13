@@ -1,8 +1,11 @@
 use axum::Router;
 use chrono::{DateTime, Utc};
+use errors::AppError;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
+use node::modules::ai::config::IndexingConfig;
+use node::modules::ai::pipeline_manager::PipelineManager;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +13,7 @@ use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
 use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tempfile::TempDir;
 
 /// Test server container with access to all components
@@ -46,7 +49,11 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
     // Setup database
     let db_path = temp_dir.path().join("test.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-    let db = Database::connect(&db_url).await.unwrap();
+
+    let mut opt = ConnectOptions::new(&db_url);
+    opt.max_connections(50).min_connections(40);
+
+    let db = Database::connect(opt).await.unwrap();
     Migrator::up(&db, None).await.unwrap();
 
     // Setup KV store
@@ -68,7 +75,12 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
         public_key: vec![0u8; 32],
     };
 
-    let node = Node::new(node_data, db, kv, auth_state);
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
+    let node = Node::new(node_data, db, kv, auth_state, pipeline_manager);
 
     (node, temp_dir)
 }
@@ -107,7 +119,12 @@ pub fn create_test_node_with_db(device_id: &str, db: DatabaseConnection, kv_path
         public_key: vec![0u8; 32],
     };
 
-    Node::new(node_data, db, kv, auth_state)
+    let indexing_config = IndexingConfig::from_env()
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
+        .unwrap();
+    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+
+    Node::new(node_data, db, kv, auth_state, pipeline_manager)
 }
 
 fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {

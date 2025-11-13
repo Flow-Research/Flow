@@ -7,7 +7,6 @@ members = [
     "event", 
     "migration",
     "node",
-    "storage/core",
 ]
 
 [workspace.dependencies]

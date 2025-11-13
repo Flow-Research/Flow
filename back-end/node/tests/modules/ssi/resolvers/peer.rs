@@ -1,5 +1,5 @@
-use log::info;
 use node::modules::ssi::did::resolvers::peer::generator::PeerDidGenerator;
+use tracing::info;
 
 // ============================================================================
 // Parser Tests - Numalgo 0 (Inception Key)

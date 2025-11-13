@@ -6,12 +6,16 @@ pub mod util;
 #[cfg(test)]
 #[ctor::ctor]
 fn global_test_setup() {
-    env_logger::builder()
-        .is_test(true)
-        .filter_level(log::LevelFilter::Debug)
-        .format_timestamp_millis()
-        .try_init()
-        .ok();
+    dotenvy::dotenv().ok();
 
-    log::info!("✓ Global logger initialized");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
 }

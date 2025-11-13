@@ -3,8 +3,8 @@ use crate::bootstrap::init::setup_test_server;
 use super::helpers::*;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use log::info;
 use tower::ServiceExt;
+use tracing::info;
 
 #[tokio::test]
 async fn test_health_endpoint_returns_200() {

@@ -1,6 +1,6 @@
-use log::{error, info};
 use ssi::dids::{DIDKey, Document as DIDDocument};
 use ssi::jwk::{JWK, Params as JWKParams};
+use tracing::{error, info};
 use webauthn_rs::prelude::{COSEKey, Passkey};
 
 use crate::modules::ssi::did::resolvers::peer::generator::PeerDidGenerator;

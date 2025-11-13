@@ -1,9 +1,9 @@
 use crate::{api::rest::helpers::*, bootstrap::init::setup_test_server};
 use axum::http::StatusCode;
 use entity::pass_key;
-use log::info;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde_json::json;
+use tracing::info;
 use webauthn_authenticator_rs::{AuthenticatorBackend, softpasskey::SoftPasskey};
 use webauthn_rs::prelude::Url;
 

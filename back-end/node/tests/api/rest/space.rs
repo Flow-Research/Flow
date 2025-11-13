@@ -1,10 +1,10 @@
 use crate::{api::rest::helpers::*, bootstrap::init::setup_test_server};
 use axum::http::StatusCode;
 use entity::space;
-use log::info;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde_json::json;
 use tempfile::TempDir;
+use tracing::info;
 
 #[tokio::test]
 async fn test_create_space_valid_directory() {
