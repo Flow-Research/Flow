@@ -190,6 +190,8 @@ impl PipelineManager {
             (pipeline_struct, indexing_pipeline)
         };
 
+        info!("Running indexing.");
+
         // Run the indexing pipeline
         indexing_pipeline
             .run()
