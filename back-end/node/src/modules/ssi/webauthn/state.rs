@@ -1,6 +1,6 @@
 use errors::AppError;
-use log::info;
 use std::sync::Arc;
+use tracing::info;
 use webauthn_rs::prelude::*;
 
 #[derive(Clone)]

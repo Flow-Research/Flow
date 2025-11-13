@@ -9,7 +9,6 @@ directories = "6.0.0"
 dotenvy = "0.15.7"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 env_logger = "0.11.8"
-log = "0.4.27"
 multibase = "0.9.1"
 rand = "0.8"
 sha2 = "0.10.9"

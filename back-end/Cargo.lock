@@ -6449,7 +6449,6 @@ dependencies = [
  "hf-hub",
  "http-body-util",
  "lingua",
- "log",
  "migration",
  "multibase 0.9.2",
  "num_cpus",

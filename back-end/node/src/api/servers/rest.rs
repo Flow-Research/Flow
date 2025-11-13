@@ -9,9 +9,9 @@ use axum::{
     routing::{get, post},
 };
 use errors::AppError;
-use log::{error, info};
 use serde_json::{Value, json};
 use tower_http::cors::{Any, CorsLayer};
+use tracing::{error, info};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 /// Build the router with all routes configured
@@ -33,30 +33,30 @@ pub fn build_router(app_state: AppState) -> Router {
         // Cache preflight requests for 1 hour
         .max_age(std::time::Duration::from_secs(3600));
 
-    let API_BASE: &str = "/api/v1";
+    let api_base: &str = "/api/v1";
 
     // Configure Router
     Router::new()
         .route(
-            format!("{}/webauthn/start_registration", API_BASE).as_str(),
+            format!("{}/webauthn/start_registration", api_base).as_str(),
             get(start_webauthn_registration),
         )
         .route(
-            format!("{}/webauthn/finish_registration", API_BASE).as_str(),
+            format!("{}/webauthn/finish_registration", api_base).as_str(),
             post(finish_webauthn_registration),
         )
         .route(
-            format!("{}/webauthn/start_authentication", API_BASE).as_str(),
+            format!("{}/webauthn/start_authentication", api_base).as_str(),
             post(start_webauthn_authentication),
         )
         .route(
-            format!("{}/webauthn/finish_authentication", API_BASE).as_str(),
+            format!("{}/webauthn/finish_authentication", api_base).as_str(),
             post(finish_webauthn_authentication),
         )
-        .route(format!("{}/spaces", API_BASE).as_str(), post(create_space))
-        .route(format!("{}/health", API_BASE).as_str(), get(health_check))
+        .route(format!("{}/spaces", api_base).as_str(), post(create_space))
+        .route(format!("{}/health", api_base).as_str(), get(health_check))
         .route(
-            format!("{}/spaces/search", API_BASE).as_str(),
+            format!("{}/spaces/search", api_base).as_str(),
             get(query_space),
         )
         .with_state(app_state)

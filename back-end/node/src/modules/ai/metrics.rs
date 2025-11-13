@@ -6,7 +6,7 @@ use std::sync::{
 use entity::space_index_status;
 use tracing::{error, info, warn};
 
-use crate::modules::ai::index::config::IndexingConfig;
+use super::config::IndexingConfig;
 
 /// Metrics for tracking pipeline progress
 #[derive(Clone, Default)]

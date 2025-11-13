@@ -1,6 +1,6 @@
 use crate::bootstrap::init::NodeData;
-use crate::modules::ai::PipelineManager;
-use crate::modules::ai::index::config::IndexingConfig;
+use crate::modules::ai::config::IndexingConfig;
+use crate::modules::ai::pipeline_manager::PipelineManager;
 use crate::{
     api::{
         node::Node,
@@ -10,10 +10,10 @@ use crate::{
     modules::ssi::webauthn::state::AuthState,
 };
 use errors::AppError;
-use log::info;
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, DatabaseConnection};
 use sled::Db;
+use tracing::info;
 
 struct InfrastructureServices {
     node_data: NodeData,
@@ -96,8 +96,7 @@ async fn setup_database(config: &Config) -> Result<DatabaseConnection, AppError>
         .connect_timeout(db_config.connect_timeout)
         .idle_timeout(db_config.idle_timeout)
         .max_lifetime(db_config.max_lifetime)
-        .sqlx_logging(db_config.logging_enabled)
-        .sqlx_logging_level(log::LevelFilter::Info); // #TODO: hard-coded right now, remember to externalize into a config
+        .sqlx_logging(db_config.logging_enabled);
 
     let connection = sea_orm::Database::connect(opt)
         .await

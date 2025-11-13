@@ -1,13 +1,13 @@
 use crate::bootstrap::init::setup_test_server;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use log::info;
 use node::api::servers::app_state::AppState;
 use node::api::servers::websocket;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite};
+use tracing::info;
 
 /// Helper function to build WebSocket router for testing
 fn build_websocket_router(app_state: AppState) -> Router {

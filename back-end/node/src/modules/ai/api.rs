@@ -1,6 +1,6 @@
 use errors::AppError;
 
-use crate::modules::ai::PipelineManager;
+use crate::modules::ai::pipeline_manager::PipelineManager;
 
 pub async fn query_space(
     pipeline_manager: &PipelineManager,

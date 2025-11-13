@@ -1,8 +1,8 @@
 use super::{error::PeerDidError, parser::*};
 use base64::Engine;
-use log::error;
 use ssi::dids::{Document as DIDDocument, document::DIDVerificationMethod};
 use std::collections::BTreeMap;
+use tracing::error;
 
 pub fn create_did_document(did: &str, parsed: ParsedPeerDid) -> Result<DIDDocument, PeerDidError> {
     use ssi::dids::document::verification_method::ValueOrReference;

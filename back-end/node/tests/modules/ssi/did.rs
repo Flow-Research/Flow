@@ -1,9 +1,9 @@
-use log::info;
 use node::modules::ssi::did::util::{
     cose_to_jwk, create_did_document, did_document_to_json, extract_ec_coordinates,
     extract_eddsa_public_key, generate_did_key_from_passkey, generate_did_peer_from_passkey,
 };
 use ssi::jwk::Params as JWKParams;
+use tracing::info;
 use webauthn_rs::prelude::{
     COSEAlgorithm, COSEEC2Key, COSEKey, COSEKeyType, COSEOKPKey, ECDSACurve, EDDSACurve,
 };

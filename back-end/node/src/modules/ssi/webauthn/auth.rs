@@ -5,7 +5,6 @@ use crate::modules::ssi::did::util::{
 use base64::prelude::*;
 use entity::pass_key;
 use entity::user;
-use log::{error, info};
 use once_cell::sync::Lazy;
 use sea_orm::{
     ActiveModelTrait,
@@ -15,6 +14,7 @@ use sea_orm::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tracing::{error, info};
 use webauthn_rs::prelude::{
     AuthenticationResult, CreationChallengeResponse, CredentialID, Passkey, PasskeyAuthentication,
     PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,

@@ -1,8 +1,8 @@
-use log::info;
 use node::modules::ssi::did::{
     resolvers::{DidResolver, ResolutionError},
     types::ResolutionOptions,
 };
+use tracing::info;
 
 // ============================================================================
 // INTEGRATION TESTS - DID:KEY Resolution

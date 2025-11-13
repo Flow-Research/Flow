@@ -3,16 +3,16 @@ use std::path::Path;
 
 use chrono::Utc;
 use errors::AppError;
-use log::{info, warn};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
 };
+use tracing::{info, warn};
 
 use entity::space;
 use sha2::{Digest, Sha256};
 use space::Entity as Space;
 
-use crate::modules::ai::PipelineManager;
+use crate::modules::ai::pipeline_manager::PipelineManager;
 
 pub async fn new_space(
     dir: &str,

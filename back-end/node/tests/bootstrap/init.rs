@@ -4,8 +4,8 @@ use errors::AppError;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
-use node::modules::ai::PipelineManager;
-use node::modules::ai::index::config::IndexingConfig;
+use node::modules::ai::config::IndexingConfig;
+use node::modules::ai::pipeline_manager::PipelineManager;
 use std::fs;
 use std::path::{Path, PathBuf};
 

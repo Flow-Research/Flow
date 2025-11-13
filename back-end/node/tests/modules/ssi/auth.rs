@@ -6,16 +6,16 @@ use crate::{
 };
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use errors::AppError;
-use log::info;
 use migration::{Migrator, MigratorTrait};
 use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
 use node::{
     api::node::Node,
-    modules::ai::{PipelineManager, index::config::IndexingConfig},
+    modules::ai::{config::IndexingConfig, pipeline_manager::PipelineManager},
 };
 use sea_orm::{ColumnTrait, Database, QueryFilter};
 use tempfile::TempDir;
+use tracing::info;
 use webauthn_authenticator_rs::{AuthenticatorBackend, softpasskey::SoftPasskey};
 use webauthn_rs::prelude::Url;
 
