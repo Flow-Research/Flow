@@ -72,12 +72,12 @@ impl IndexingConfig {
             min_chunk_size: std::env::var("MIN_CHUNK_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(100),
+                .unwrap_or(10),
 
             max_chunk_size: std::env::var("MAX_CHUNK_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(2048),
+                .unwrap_or(20_048),
 
             max_file_size: std::env::var("MAX_FILE_SIZE")
                 .ok()
