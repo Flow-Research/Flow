@@ -3,6 +3,7 @@ use crate::modules::network::behaviour::FlowBehaviourEvent;
 use crate::modules::network::peer_registry::{
     ConnectionDirection, NetworkStats, PeerInfo, PeerRegistry,
 };
+use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
 use errors::AppError;
 use libp2p::{Multiaddr, PeerId, Swarm, futures::StreamExt, identity::Keypair, noise, tcp, yamux};
@@ -113,8 +114,16 @@ impl NetworkManager {
     ) -> Result<Swarm<FlowBehaviour>, AppError> {
         info!("Building libp2p Swarm");
 
+        // Create persistent RocksDB store for DHT
+        let storage_config = StorageConfig::from_env();
+        let store = RocksDbStore::new(
+            &storage_config.db_path,
+            local_peer_id,
+            storage_config.clone(),
+        )?;
+
         // Create the behaviour
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         // Add bootstrap peers to Kademlia
         for addr in &config.bootstrap_peers {

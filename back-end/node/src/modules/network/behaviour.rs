@@ -1,5 +1,6 @@
+use crate::modules::network::storage::RocksDbStore;
 use libp2p::PeerId;
-use libp2p::kad::{self, store::MemoryStore};
+use libp2p::kad;
 use libp2p::swarm::NetworkBehaviour;
 
 /// Combined network behaviour for Flow
@@ -15,7 +16,7 @@ use libp2p::swarm::NetworkBehaviour;
 #[behaviour(to_swarm = "FlowBehaviourEvent")]
 pub struct FlowBehaviour {
     /// Kademlia DHT for distributed peer discovery
-    pub kademlia: kad::Behaviour<MemoryStore>,
+    pub kademlia: kad::Behaviour<RocksDbStore>,
 }
 
 /// Events emitted by the Flow behaviour
@@ -37,15 +38,15 @@ impl FlowBehaviour {
     ///
     /// # Arguments
     /// * `local_peer_id` - The PeerId of this node
+    /// * `store` - Persistent RocksDB store for DHT records
     ///
     /// # Returns
     /// A configured FlowBehaviour ready for use in a Swarm
-    pub fn new(local_peer_id: PeerId) -> Self {
+    pub fn new(local_peer_id: PeerId, store: RocksDbStore) -> Self {
         // Create Kademlia configuration
         let kad_config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
 
         // Create Kademlia behaviour with in-memory store
-        let store = MemoryStore::new(local_peer_id);
         let kademlia = kad::Behaviour::with_config(local_peer_id, store, kad_config);
 
         Self { kademlia }
@@ -69,17 +70,38 @@ impl FlowBehaviour {
 
 #[cfg(test)]
 mod tests {
+    use crate::modules::network::storage::StorageConfig;
+
     use super::*;
     use libp2p::identity::Keypair;
+    use tempfile::TempDir;
 
     fn generate_peer_id() -> PeerId {
         Keypair::generate_ed25519().public().to_peer_id()
     }
 
+    // Helper function to create a temporary RocksDB store for testing
+    fn create_test_store(peer_id: PeerId) -> (RocksDbStore, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = StorageConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            max_records: 1000,
+            max_providers_per_key: 20,
+            max_value_bytes: 65536,
+            enable_compression: false, // Disable for faster tests
+        };
+
+        let store = RocksDbStore::new(temp_dir.path(), peer_id, config)
+            .expect("Failed to create test store");
+
+        (store, temp_dir)
+    }
+
     #[test]
     fn test_behaviour_creation() {
         let peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(peer_id);
+        let (store, _temp_dir) = create_test_store(peer_id);
+        let mut behaviour = FlowBehaviour::new(peer_id, store);
 
         // Verify Kademlia is initialized with empty routing table
         assert_eq!(
@@ -92,7 +114,8 @@ mod tests {
     #[test]
     fn test_bootstrap_fails_without_known_peers() {
         let peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(peer_id);
+        let (store, _temp_dir) = create_test_store(peer_id);
+        let mut behaviour = FlowBehaviour::new(peer_id, store);
 
         // Attempt to bootstrap without any known peers
         let result = behaviour.bootstrap();
@@ -112,7 +135,8 @@ mod tests {
     #[test]
     fn test_bootstrap_succeeds_with_known_peers() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         // Add a bootstrap peer
         let bootstrap_peer = generate_peer_id();
@@ -136,7 +160,8 @@ mod tests {
     #[test]
     fn test_add_single_bootstrap_peer() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         let bootstrap_peer = generate_peer_id();
         let addr: libp2p::Multiaddr = "/ip4/192.168.1.100/tcp/4001".parse().unwrap();
@@ -158,7 +183,8 @@ mod tests {
     #[test]
     fn test_add_multiple_bootstrap_peers() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         // Add multiple bootstrap peers
         let peer1 = generate_peer_id();
@@ -176,7 +202,8 @@ mod tests {
     #[test]
     fn test_add_multiple_addresses_for_same_peer() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         let bootstrap_peer = generate_peer_id();
 
@@ -197,7 +224,8 @@ mod tests {
     #[test]
     fn test_bootstrap_query_id_uniqueness() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
 
         // Add a peer
         let peer = generate_peer_id();
@@ -216,7 +244,8 @@ mod tests {
     #[test]
     fn test_multiaddr_parsing_validation() {
         let local_peer_id = generate_peer_id();
-        let mut behaviour = FlowBehaviour::new(local_peer_id);
+        let (store, _temp_dir) = create_test_store(local_peer_id);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
         let peer = generate_peer_id();
 
         // Test various valid multiaddr formats
