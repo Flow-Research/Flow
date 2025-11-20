@@ -258,7 +258,11 @@ impl NetworkEventLoop {
 
                 // Handle commands from NetworkManager
                 Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command).await;
+                    if self.handle_command(command).await {
+                        // Shutdown requested
+                        info!("Event loop shutting down");
+                        break;
+                    }
                 }
             }
         }
@@ -293,15 +297,16 @@ impl NetworkEventLoop {
         }
     }
 
-    async fn handle_command(&mut self, command: NetworkCommand) {
+    async fn handle_command(&mut self, command: NetworkCommand) -> bool {
         match command {
             NetworkCommand::Shutdown => {
                 info!("Received shutdown command");
-                return;
+                return true;
             }
             NetworkCommand::GetPeerCount(response_tx) => {
                 let count = self.swarm.connected_peers().count();
                 let _ = response_tx.send(count);
+                return false;
             }
         }
     }

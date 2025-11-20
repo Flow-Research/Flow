@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::config::IndexingConfig;
 use crate::modules::ai::pipeline_manager::PipelineManager;
+use crate::modules::network::config::NetworkConfig;
+use crate::modules::network::manager::NetworkManager;
 use crate::{
     api::{
         node::Node,
@@ -19,6 +23,7 @@ struct InfrastructureServices {
     node_data: NodeData,
     db_conn: DatabaseConnection,
     kv: Db,
+    network_manager: Arc<NetworkManager>,
 }
 
 struct ApplicationServices {
@@ -61,11 +66,15 @@ async fn init_infrastructure(config: &Config) -> Result<InfrastructureServices, 
         setup_kv_store(config)
     )?;
 
+    let network_manager = NetworkManager::new(&node_data).await?;
+    let network_manager = Arc::new(network_manager);
+
     info!("Infrastructure initialized successfully");
     Ok(InfrastructureServices {
         node_data,
         db_conn,
         kv,
+        network_manager,
     })
 }
 
@@ -135,6 +144,7 @@ fn assemble_application(infra: InfrastructureServices, services: ApplicationServ
         infra.kv,
         services.auth_state,
         services.pipeline_manager,
+        infra.network_manager,
     );
     AppState::new(node)
 }
@@ -142,10 +152,23 @@ fn assemble_application(infra: InfrastructureServices, services: ApplicationServ
 async fn run_servers(app_state: AppState, config: Config) -> Result<(), AppError> {
     info!("Starting servers...");
 
+    {
+        let node = app_state.node.read().await;
+        let network_config = NetworkConfig::from_env();
+        node.network_manager.start(&network_config).await?;
+        info!("Network manager started");
+    }
+
     tokio::select! {
         result = rest::start(&app_state, &config) => result?,
         result = websocket::start(&app_state, &config) => result?,
-        _ = tokio::signal::ctrl_c() => info!("Shutdown signal received"),
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received");
+
+            // NEW: Stop network manager gracefully
+            let node = app_state.node.read().await;
+            node.network_manager.stop().await?;
+        },
     }
 
     info!("Application shutdown complete.");

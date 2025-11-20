@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::pipeline_manager::PipelineManager;
+use crate::modules::network::manager::NetworkManager;
 use crate::modules::ssi::webauthn;
 use crate::modules::ssi::webauthn::state::AuthState;
 use crate::modules::{ai, space};
@@ -20,6 +23,7 @@ pub struct Node {
     pub kv: Db,
     pub auth_state: AuthState,
     pub pipeline_manager: PipelineManager,
+    pub network_manager: Arc<NetworkManager>,
 }
 
 impl Node {
@@ -29,6 +33,7 @@ impl Node {
         kv: Db,
         auth_state: AuthState,
         pipeline_manager: PipelineManager,
+        network_manager: Arc<NetworkManager>,
     ) -> Self {
         Node {
             node_data,
@@ -36,7 +41,16 @@ impl Node {
             kv,
             auth_state,
             pipeline_manager,
+            network_manager,
         }
+    }
+
+    pub fn peer_id(&self) -> String {
+        self.network_manager.local_peer_id().to_string()
+    }
+
+    pub async fn peer_count(&self) -> Result<usize, AppError> {
+        self.network_manager.peer_count().await
     }
 
     pub async fn create_space(&self, dir: &str) -> Result<(), AppError> {

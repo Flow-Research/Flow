@@ -6,8 +6,10 @@ use node::api::servers::rest;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use node::modules::ai::config::IndexingConfig;
 use node::modules::ai::pipeline_manager::PipelineManager;
+use node::modules::network::manager::NetworkManager;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
@@ -80,7 +82,17 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
         .unwrap();
     let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
 
-    let node = Node::new(node_data, db, kv, auth_state, pipeline_manager);
+    let network_manager = NetworkManager::new(&node_data).await.unwrap();
+    let network_manager = Arc::new(network_manager);
+
+    let node = Node::new(
+        node_data,
+        db,
+        kv,
+        auth_state,
+        pipeline_manager,
+        network_manager,
+    );
 
     (node, temp_dir)
 }
@@ -103,7 +115,11 @@ pub async fn setup_test_multi_node() -> (DatabaseConnection, TempDir) {
 }
 
 /// Create a node with custom device_id using existing database
-pub fn create_test_node_with_db(device_id: &str, db: DatabaseConnection, kv_path: &Path) -> Node {
+pub async fn create_test_node_with_db(
+    device_id: &str,
+    db: DatabaseConnection,
+    kv_path: &Path,
+) -> Node {
     let kv = sled::open(kv_path).unwrap();
 
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
@@ -124,7 +140,17 @@ pub fn create_test_node_with_db(device_id: &str, db: DatabaseConnection, kv_path
         .unwrap();
     let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
 
-    Node::new(node_data, db, kv, auth_state, pipeline_manager)
+    let network_manager = NetworkManager::new(&node_data).await.unwrap();
+    let network_manager = Arc::new(network_manager);
+
+    Node::new(
+        node_data,
+        db,
+        kv,
+        auth_state,
+        pipeline_manager,
+        network_manager,
+    )
 }
 
 fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {
