@@ -20,6 +20,16 @@ pub struct NodeData {
     pub public_key: Vec<u8>,
 }
 
+impl std::fmt::Debug for NodeData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeData")
+            .field("id", &self.id)
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .finish()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthMetadata {
     pub schema: String,
