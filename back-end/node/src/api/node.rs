@@ -3,10 +3,12 @@ use std::sync::Arc;
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::pipeline_manager::PipelineManager;
 use crate::modules::network::manager::NetworkManager;
+use crate::modules::network::peer_registry::{NetworkStats, PeerInfo};
 use crate::modules::ssi::webauthn;
 use crate::modules::ssi::webauthn::state::AuthState;
 use crate::modules::{ai, space};
 use errors::AppError;
+use libp2p::Multiaddr;
 use sea_orm::DatabaseConnection;
 use sled::Db;
 use tracing::info;
@@ -51,6 +53,40 @@ impl Node {
 
     pub async fn peer_count(&self) -> Result<usize, AppError> {
         self.network_manager.peer_count().await
+    }
+
+    /// Get list of connected peers
+    pub async fn connected_peers(&self) -> Result<Vec<PeerInfo>, AppError> {
+        self.network_manager.connected_peers().await
+    }
+
+    /// Get information about a specific peer
+    pub async fn peer_info(&self, peer_id_str: &str) -> Result<Option<PeerInfo>, AppError> {
+        let peer_id = peer_id_str
+            .parse()
+            .map_err(|e| AppError::Network(format!("Invalid peer ID: {}", e)))?;
+        self.network_manager.peer_info(peer_id).await
+    }
+
+    /// Dial a peer at a specific address
+    pub async fn dial_peer(&self, address_str: &str) -> Result<(), AppError> {
+        let address: Multiaddr = address_str
+            .parse()
+            .map_err(|e| AppError::Network(format!("Invalid multiaddr: {}", e)))?;
+        self.network_manager.dial_peer(address).await
+    }
+
+    /// Disconnect from a peer
+    pub async fn disconnect_peer(&self, peer_id_str: &str) -> Result<(), AppError> {
+        let peer_id = peer_id_str
+            .parse()
+            .map_err(|e| AppError::Network(format!("Invalid peer ID: {}", e)))?;
+        self.network_manager.disconnect_peer(peer_id).await
+    }
+
+    /// Get network statistics
+    pub async fn network_stats(&self) -> Result<NetworkStats, AppError> {
+        self.network_manager.network_stats().await
     }
 
     pub async fn create_space(&self, dir: &str) -> Result<(), AppError> {
