@@ -20,6 +20,16 @@ pub struct NodeData {
     pub public_key: Vec<u8>,
 }
 
+impl std::fmt::Debug for NodeData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeData")
+            .field("id", &self.id)
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .finish()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthMetadata {
     pub schema: String,
@@ -55,6 +65,32 @@ pub fn get_flow_config_dir() -> String {
 
     // Fallback if BaseDirs fails (very rare)
     "flow".to_string()
+}
+
+/// Get Flow data directory for persistent storage
+pub fn get_flow_data_dir() -> PathBuf {
+    if let Ok(p) = env::var("FLOW_DATA_HOME") {
+        return PathBuf::from(p);
+    }
+
+    if let Some(b) = BaseDirs::new() {
+        // Use data_dir for database files (more appropriate)
+        // Linux: ~/.local/share/flow
+        // macOS: ~/Library/Application Support/flow
+        // Windows: %APPDATA%\flow
+        return b.data_dir().join("flow");
+    }
+
+    // Fallback if BaseDirs fails (very rare)
+    // Use /tmp on Unix-like systems, C:\Temp on Windows
+    #[cfg(unix)]
+    return PathBuf::from("/tmp/flow");
+
+    #[cfg(windows)]
+    return PathBuf::from("C:\\Temp\\flow");
+
+    #[cfg(not(any(unix, windows)))]
+    return PathBuf::from("flow-data");
 }
 
 pub fn initialize_config_dir(dir: &str) -> Result<NodeData, AppError> {

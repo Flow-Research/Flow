@@ -1,362 +1,412 @@
-#[path = "fixtures/mod.rs"]
-mod fixtures;
-
-use event::{store::SignedPayload, EventStore};
-use fixtures::*;
+use event::{
+    types::{DottedVersionVector, EventPayload},
+    EventStoreConfig, EventValidator, RocksDbEventStore, SignedPayload,
+};
+use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-#[test]
-fn test_store_creation() {
-    let temp_dir = TempDir::new().unwrap();
-    let validator = create_test_validator();
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct TestPayload {
+    message: String,
+    count: u64,
+}
 
-    let store = EventStore::new(
-        temp_dir.path(),
+impl EventPayload for TestPayload {
+    const TYPE: &'static str = "test.event";
+    const VERSION: u32 = 1;
+}
+
+fn create_test_store() -> (RocksDbEventStore, TempDir) {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let validator = EventValidator::new();
+
+    // Register test schema
+    let schema = serde_json::json!({
+        "title": "test.event",
+        "version": 1,
+        "type": "object",
+        "properties": {
+            "message": { "type": "string" },
+            "count": { "type": "number" }
+        },
+        "required": ["message", "count"]
+    });
+    validator.register_schema(schema).unwrap();
+
+    let config = EventStoreConfig::default();
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
         "test_stream".to_string(),
         "test_space".to_string(),
         validator,
-    );
+        config,
+    )
+    .expect("Failed to create store");
 
-    assert!(store.is_ok());
+    (store, temp_dir)
+}
+
+fn create_signed_payload(message: &str, count: u64) -> SignedPayload<TestPayload> {
+    SignedPayload {
+        payload: TestPayload {
+            message: message.to_string(),
+            count,
+        },
+        signer_did: "did:test:alice".to_string(),
+        signature: "fake_signature_base64".to_string(),
+        signature_type: "Ed25519".to_string(),
+    }
 }
 
 #[test]
-fn test_store_creation_reopen() {
-    let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().to_path_buf();
-
-    // Create and drop store
-    {
-        let validator = create_test_validator();
-        let _store = EventStore::new(
-            &path,
-            "test_stream".to_string(),
-            "test_space".to_string(),
-            validator,
-        )
-        .unwrap();
-    }
-
-    // Reopen
-    let validator = create_test_validator();
-    let store = EventStore::new(
-        &path,
-        "test_stream".to_string(),
-        "test_space".to_string(),
-        validator,
-    );
-
-    assert!(store.is_ok());
+fn test_create_store() {
+    let (store, _temp) = create_test_store();
+    assert_eq!(store.event_count().unwrap(), 0);
 }
 
 #[test]
 fn test_append_single_event() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
-    let signed_payload = SignedPayload {
-        payload: TestPayload {
-            message: "Hello, World!".to_string(),
-            count: 42,
-        },
-        signer_did: test_did("alice"),
-        signature: fake_signature("test"),
-        signature_type: "Ed25519".to_string(),
-    };
+    let payload = create_signed_payload("Hello", 1);
+    let event = store.append(payload).expect("Failed to append event");
 
-    let result = store.append(signed_payload);
-    assert!(result.is_ok());
-
-    let event = result.unwrap();
-    assert_eq!(event.signer, test_did("alice"));
-    assert_eq!(event.event_type, "TestEvent");
+    assert_eq!(event.event_type, "test.event");
     assert_eq!(event.schema_version, 1);
+    assert_eq!(event.signer, "did:test:alice");
+    assert_eq!(event.sig_type, "Ed25519");
+    assert_eq!(store.event_count().unwrap(), 1);
 }
 
 #[test]
 fn test_append_multiple_events() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
     for i in 0..10 {
-        let signed_payload = SignedPayload {
-            payload: TestPayload {
-                message: format!("Message {}", i),
-                count: i,
-            },
-            signer_did: test_did("alice"),
-            signature: fake_signature(&format!("sig_{}", i)),
-            signature_type: "Ed25519".to_string(),
-        };
-
-        assert!(store.append(signed_payload).is_ok());
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).expect("Failed to append event");
     }
 
-    let count = store.event_count().unwrap();
-    assert_eq!(count, 10);
+    assert_eq!(store.event_count().unwrap(), 10);
 }
 
 #[test]
-fn test_append_creates_hash_chain() {
-    let (store, _temp_dir) = create_test_store();
+fn test_get_event_by_offset() {
+    let (store, _temp) = create_test_store();
 
-    let event1 = store.append(create_signed_payload("Message 1", 1)).unwrap();
+    let payload1 = create_signed_payload("First", 1);
+    store.append(payload1).unwrap();
 
-    let event2 = store.append(create_signed_payload("Message 2", 2)).unwrap();
+    let payload2 = create_signed_payload("Second", 2);
+    let event2 = store.append(payload2).unwrap();
 
-    let event3 = store.append(create_signed_payload("Message 3", 3)).unwrap();
-
-    // Verify chain
-    assert!(event2.verify_chain(&event1).unwrap());
-    assert!(event3.verify_chain(&event2).unwrap());
+    let retrieved = store.get_event(1).unwrap().expect("Event not found");
+    assert_eq!(retrieved.id, event2.id);
+    assert_eq!(retrieved.signer, "did:test:alice");
 }
 
 #[test]
-fn test_append_advances_causality() {
-    let (store, _temp_dir) = create_test_store();
-
-    let event1 = store.append(create_signed_payload("Msg 1", 1)).unwrap();
-
-    let event2 = store.append(create_signed_payload("Msg 2", 2)).unwrap();
-
-    let alice = test_did("alice");
-
-    assert_eq!(event1.causality.clocks.get(&alice), Some(&1));
-    assert_eq!(event2.causality.clocks.get(&alice), Some(&2));
-}
-
-#[test]
-fn test_get_event_success() {
-    let (store, _temp_dir) = create_test_store();
-
-    let original = store.append(create_signed_payload("Test", 42)).unwrap();
-
-    let retrieved = store.get_event(0).unwrap();
-    assert!(retrieved.is_some());
-
-    let retrieved = retrieved.unwrap();
-    assert_eq!(retrieved.id, original.id);
-    assert_eq!(retrieved.signer, original.signer);
-}
-
-#[test]
-fn test_get_event_not_found() {
-    let (store, _temp_dir) = create_test_store();
+fn test_get_nonexistent_event() {
+    let (store, _temp) = create_test_store();
 
     let result = store.get_event(999).unwrap();
     assert!(result.is_none());
 }
 
 #[test]
-fn test_get_head_offset_empty() {
-    let (store, _temp_dir) = create_test_store();
-
-    let result = store.get_head_offset();
-    assert!(result.is_err()); // Empty log
-}
-
-#[test]
 fn test_get_head_offset() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
-    store.append(create_signed_payload("Msg 1", 1)).unwrap();
-    store.append(create_signed_payload("Msg 2", 2)).unwrap();
-    store.append(create_signed_payload("Msg 3", 3)).unwrap();
+    // Empty store should error
+    assert!(store.get_head_offset().is_err());
 
-    let head = store.get_head_offset().unwrap();
-    assert_eq!(head, 2); // 0-indexed, so 3rd event is at offset 2
+    // After appending events
+    for i in 0..5 {
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).unwrap();
+    }
+
+    assert_eq!(store.get_head_offset().unwrap(), 4);
 }
 
 #[test]
-fn test_get_causality() {
-    let (store, _temp_dir) = create_test_store();
+fn test_causality_tracking() {
+    let (store, _temp) = create_test_store();
 
-    store.append(create_signed_payload("Msg 1", 1)).unwrap();
-    store.append(create_signed_payload("Msg 2", 2)).unwrap();
+    let payload = create_signed_payload("Test", 1);
+    store.append(payload).unwrap();
 
     let causality = store.get_causality().unwrap();
-    assert_eq!(causality.clocks.get(&test_did("alice")), Some(&2));
+    assert_eq!(causality.clocks.get("did:test:alice"), Some(&1));
+
+    // Append another event from same actor
+    let payload2 = create_signed_payload("Test 2", 2);
+    store.append(payload2).unwrap();
+
+    let causality2 = store.get_causality().unwrap();
+    assert_eq!(causality2.clocks.get("did:test:alice"), Some(&2));
 }
 
 #[test]
-fn test_get_prev_hash_genesis() {
-    let (store, _temp_dir) = create_test_store();
+fn test_hash_chain() {
+    let (store, _temp) = create_test_store();
 
-    let prev_hash = store.get_prev_hash().unwrap();
-    assert_eq!(prev_hash, "0".repeat(64)); // Genesis
+    let payload1 = create_signed_payload("First", 1);
+    let event1 = store.append(payload1).unwrap();
+
+    let payload2 = create_signed_payload("Second", 2);
+    let event2 = store.append(payload2).unwrap();
+
+    // Verify hash chain
+    let hash1 = event1.compute_hash().unwrap();
+    assert_eq!(event2.prev_hash, hash1);
 }
 
 #[test]
-fn test_get_prev_hash_after_append() {
-    let (store, _temp_dir) = create_test_store();
+fn test_prev_hash_genesis() {
+    let (store, _temp) = create_test_store();
 
-    let event = store.append(create_signed_payload("Msg", 1)).unwrap();
-    let expected_hash = event.compute_hash().unwrap();
+    let payload = create_signed_payload("Genesis", 1);
+    let event = store.append(payload).unwrap();
 
-    let prev_hash = store.get_prev_hash().unwrap();
-    assert_eq!(prev_hash, expected_hash);
+    // First event should have genesis prev_hash
+    assert_eq!(event.prev_hash, "0".repeat(64));
+}
+
+#[test]
+fn test_get_offset_by_hash() {
+    let (store, _temp) = create_test_store();
+
+    let payload = create_signed_payload("Test", 1);
+    let event = store.append(payload).unwrap();
+
+    let hash = event.compute_hash().unwrap();
+    let offset = store.get_offset_by_hash(&hash).unwrap();
+
+    assert_eq!(offset, Some(0));
+}
+
+#[test]
+fn test_hash_index_deduplication() {
+    let (store, _temp) = create_test_store();
+
+    for i in 0..5 {
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).unwrap();
+    }
+
+    // All events should be indexed
+    for offset in 0..5 {
+        let event = store.get_event(offset).unwrap().unwrap();
+        let hash = event.compute_hash().unwrap();
+        let found_offset = store.get_offset_by_hash(&hash).unwrap();
+        assert_eq!(found_offset, Some(offset));
+    }
 }
 
 #[test]
 fn test_iter_events() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
-    // Append 5 events
-    for i in 0..5 {
-        store
-            .append(create_signed_payload(&format!("Msg {}", i), i))
-            .unwrap();
+    for i in 0..10 {
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).unwrap();
     }
 
-    let events: Vec<_> = store.iter_events().collect();
-    assert_eq!(events.len(), 5);
+    let events: Vec<_> = store
+        .iter_events()
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
-    // All should succeed
-    for event_result in events {
-        assert!(event_result.is_ok());
-    }
+    assert_eq!(events.len(), 10);
+    assert_eq!(events[0].0, 0); // First offset is 0
+    assert_eq!(events[9].0, 9); // Last offset is 9
 }
 
 #[test]
 fn test_iter_from_offset() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
-    for i in 0..5 {
-        store
-            .append(create_signed_payload(&format!("Msg {}", i), i))
-            .unwrap();
+    for i in 0..10 {
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).unwrap();
     }
 
-    let events: Vec<_> = store.iter_from(2).collect();
+    let events: Vec<_> = store
+        .iter_from(5)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
-    // Should get events from offset 2 onwards
-    assert!(events.len() >= 3);
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0].0, 5);
+    assert_eq!(events[4].0, 9);
 }
 
 #[test]
 fn test_iter_range() {
-    let (store, _temp_dir) = create_test_store();
+    let (store, _temp) = create_test_store();
 
     for i in 0..10 {
-        store
-            .append(create_signed_payload(&format!("Msg {}", i), i))
-            .unwrap();
+        let payload = create_signed_payload(&format!("Message {}", i), i);
+        store.append(payload).unwrap();
     }
 
-    let events: Vec<_> = store.iter_range(2, 5).collect();
+    let events: Vec<_> = store
+        .iter_range(3, 7)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
-    // Should get offsets 2, 3, 4 (5 is exclusive)
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0].0, 3);
+    assert_eq!(events[3].0, 6);
 }
 
 #[test]
-fn test_event_count() {
-    let (store, _temp_dir) = create_test_store();
+fn test_empty_signature_rejected() {
+    let (store, _temp) = create_test_store();
 
-    assert_eq!(store.event_count().unwrap(), 0);
+    let mut payload = create_signed_payload("Test", 1);
+    payload.signature = "".to_string();
 
-    store.append(create_signed_payload("Msg 1", 1)).unwrap();
-    assert_eq!(store.event_count().unwrap(), 1);
+    let result = store.append(payload);
+    assert!(result.is_err());
+}
 
-    store.append(create_signed_payload("Msg 2", 2)).unwrap();
-    assert_eq!(store.event_count().unwrap(), 2);
+#[test]
+fn test_empty_signature_type_rejected() {
+    let (store, _temp) = create_test_store();
+
+    let mut payload = create_signed_payload("Test", 1);
+    payload.signature_type = "".to_string();
+
+    let result = store.append(payload);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_concurrent_appends() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let (store, _temp) = create_test_store();
+    let store = Arc::new(store);
+
+    let mut handles = vec![];
+    for i in 0..10 {
+        let store_clone = Arc::clone(&store);
+        let handle = thread::spawn(move || {
+            let payload = create_signed_payload(&format!("Message {}", i), i);
+            store_clone.append(payload).expect("Failed to append");
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+
+    assert_eq!(store.event_count().unwrap(), 10);
 }
 
 #[test]
 fn test_persistence_across_reopens() {
-    let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().to_path_buf();
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("events");
 
-    // Create store and add events
+    // First store instance
     {
-        let validator = create_test_validator();
-        let store = EventStore::new(
+        let validator = EventValidator::new();
+        let schema = serde_json::json!({
+            "title": "test.event",
+            "version": 1,
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" },
+                "count": { "type": "number" }
+            },
+            "required": ["message", "count"]
+        });
+        validator.register_schema(schema).unwrap();
+
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
             &path,
             "test_stream".to_string(),
             "test_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
         for i in 0..5 {
-            store
-                .append(create_signed_payload(&format!("Msg {}", i), i))
-                .unwrap();
+            let payload = create_signed_payload(&format!("Message {}", i), i);
+            store.append(payload).unwrap();
         }
     }
 
-    // Reopen and verify
+    // Second store instance - should load existing data
     {
-        let validator = create_test_validator();
-        let store = EventStore::new(
+        let validator = EventValidator::new();
+        let schema = serde_json::json!({
+            "title": "test.event",
+            "version": 1,
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" },
+                "count": { "type": "number" }
+            },
+            "required": ["message", "count"]
+        });
+        validator.register_schema(schema).unwrap();
+
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
             &path,
             "test_stream".to_string(),
             "test_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
         assert_eq!(store.event_count().unwrap(), 5);
-        let head = store.get_head_offset().unwrap();
-        assert_eq!(head, 4);
+        assert_eq!(store.get_head_offset().unwrap(), 4);
     }
 }
 
 #[test]
-fn test_concurrent_append_different_actors() {
-    let (store, _temp_dir) = create_test_store();
+fn test_config_from_env() {
+    std::env::set_var("EVENT_STORE_MAX_OPEN_FILES", "500");
+    std::env::set_var("EVENT_STORE_ENABLE_COMPRESSION", "false");
 
-    let payload_alice = SignedPayload {
-        payload: TestPayload {
-            message: "Alice".to_string(),
-            count: 1,
-        },
-        signer_did: test_did("alice"),
-        signature: fake_signature("alice"),
-        signature_type: "Ed25519".to_string(),
-    };
+    let config = EventStoreConfig::from_env();
 
-    let payload_bob = SignedPayload {
-        payload: TestPayload {
-            message: "Bob".to_string(),
-            count: 2,
-        },
-        signer_did: test_did("bob"),
-        signature: fake_signature("bob"),
-        signature_type: "Ed25519".to_string(),
-    };
+    assert_eq!(config.max_open_files, 500);
+    assert_eq!(config.enable_compression, false);
 
-    store.append(payload_alice).unwrap();
-    store.append(payload_bob).unwrap();
+    // Cleanup
+    std::env::remove_var("EVENT_STORE_MAX_OPEN_FILES");
+    std::env::remove_var("EVENT_STORE_ENABLE_COMPRESSION");
+}
+
+#[test]
+fn test_multiple_actors_causality() {
+    let (store, _temp) = create_test_store();
+
+    // Actor 1
+    let mut payload1 = create_signed_payload("Actor 1", 1);
+    payload1.signer_did = "did:test:actor1".to_string();
+    store.append(payload1).unwrap();
+
+    // Actor 2
+    let mut payload2 = create_signed_payload("Actor 2", 2);
+    payload2.signer_did = "did:test:actor2".to_string();
+    store.append(payload2).unwrap();
 
     let causality = store.get_causality().unwrap();
-    assert_eq!(causality.clocks.get(&test_did("alice")), Some(&1));
-    assert_eq!(causality.clocks.get(&test_did("bob")), Some(&1));
-}
-
-// Helper functions
-
-fn create_test_store() -> (EventStore, TempDir) {
-    let temp_dir = TempDir::new().unwrap();
-    let validator = create_test_validator();
-
-    let store = EventStore::new(
-        temp_dir.path(),
-        "test_stream".to_string(),
-        "test_space".to_string(),
-        validator,
-    )
-    .unwrap();
-
-    (store, temp_dir)
-}
-
-fn create_signed_payload(message: &str, count: i32) -> SignedPayload<TestPayload> {
-    SignedPayload {
-        payload: TestPayload {
-            message: message.to_string(),
-            count,
-        },
-        signer_did: test_did("alice"),
-        signature: fake_signature(message),
-        signature_type: "Ed25519".to_string(),
-    }
+    assert_eq!(causality.clocks.get("did:test:actor1"), Some(&1));
+    assert_eq!(causality.clocks.get("did:test:actor2"), Some(&1));
 }

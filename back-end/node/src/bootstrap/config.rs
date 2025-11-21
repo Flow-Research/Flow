@@ -3,6 +3,8 @@ use errors::AppError;
 use std::str::FromStr;
 use std::{env, time::Duration};
 
+use crate::modules::storage::KvConfig;
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub rest_port: u16,
@@ -19,11 +21,6 @@ pub struct DbConfig {
     pub idle_timeout: Duration,
     pub max_lifetime: Duration,
     pub logging_enabled: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct KvConfig {
-    pub path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +68,7 @@ impl Config {
         let logging_enabled = get_env_bool("DB_LOGGING_ENABLED", false)?; // <-- Parse the new variable
 
         // KvConfig
-        let kv_path = env::var("KV_STORE_PATH").unwrap_or("/tmp/flow-kv".to_string());
+        let kv_config = KvConfig::from_env();
 
         // ServerConfig
         let rest_port = get_env_u64("REST_PORT", 8080)? as u16;
@@ -88,7 +85,12 @@ impl Config {
                 max_lifetime: Duration::from_secs(max_lifetime_secs),
                 logging_enabled,
             },
-            kv: KvConfig { path: kv_path },
+            kv: KvConfig {
+                path: kv_config.path,
+                enable_compression: kv_config.enable_compression,
+                max_open_files: kv_config.max_open_files,
+                write_buffer_size: kv_config.write_buffer_size,
+            },
             server: ServerConfig {
                 rest_port,
                 websocket_port,

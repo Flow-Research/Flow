@@ -10,20 +10,39 @@ use ulid::Ulid;
 pub enum EventError {
     #[error("validation failed: {0}")]
     Validation(String),
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
     #[error("schema not found for type '{event_type}' and version '{version}'")]
     SchemaNotFound { event_type: String, version: u32 },
+
     #[error("Invalid payload for event")]
     InvalidPayload,
-    #[error("database error: {0}")]
-    Database(#[from] sled::Error),
+
+    #[error("storage error: {0}")]
+    Storage(String),
+
     #[error("Log is empty, cannot determine previous state")]
     LogIsEmpty,
+
     #[error("TransactionError '{0}'")]
     TransactionError(String),
+
     #[error("HashError '{0}'")]
     HashError(String),
+
+    #[error("Column family not found: {0}")]
+    ColumnFamilyNotFound(String),
+
+    #[error("Invalid data format: {0}")]
+    InvalidData(String),
+}
+
+impl From<rocksdb::Error> for EventError {
+    fn from(err: rocksdb::Error) -> Self {
+        EventError::Storage(err.to_string())
+    }
 }
 
 /// A trait that all event payloads must implement.

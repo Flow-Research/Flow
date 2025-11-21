@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     bootstrap::init::{
         setup_test_db, setup_test_multi_node, setup_test_node, setup_test_node_with_device_id,
@@ -7,12 +9,12 @@ use crate::{
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use errors::AppError;
 use migration::{Migrator, MigratorTrait};
-use node::bootstrap::init::NodeData;
 use node::modules::ssi::webauthn::state::AuthState;
 use node::{
     api::node::Node,
     modules::ai::{config::IndexingConfig, pipeline_manager::PipelineManager},
 };
+use node::{bootstrap::init::NodeData, modules::network::manager::NetworkManager};
 use sea_orm::{ColumnTrait, Database, QueryFilter};
 use tempfile::TempDir;
 use tracing::info;
@@ -146,12 +148,27 @@ async fn test_start_registration_challenge_is_unique() {
 async fn test_start_registration_with_multiple_devices() {
     let (db, temp_dir) = setup_test_multi_node().await;
 
-    // Create two nodes with different device IDs
+    // Create two KV stores with RocksDB instead of Sled
+    use node::modules::storage::{KvConfig, KvStore, RocksDbKvStore};
+    use std::sync::Arc;
+
     let kv_path1 = temp_dir.path().join("kv1");
-    let kv1 = sled::open(&kv_path1).unwrap();
+    let kv_config1 = KvConfig {
+        path: kv_path1.clone(),
+        enable_compression: false,
+        max_open_files: 100,
+        write_buffer_size: 1024 * 1024,
+    };
+    let kv1: Arc<dyn KvStore> = Arc::new(RocksDbKvStore::new(&kv_path1, &kv_config1).unwrap());
 
     let kv_path2 = temp_dir.path().join("kv2");
-    let kv2 = sled::open(&kv_path2).unwrap();
+    let kv_config2 = KvConfig {
+        path: kv_path2.clone(),
+        enable_compression: false,
+        max_open_files: 100,
+        write_buffer_size: 1024 * 1024,
+    };
+    let kv2: Arc<dyn KvStore> = Arc::new(RocksDbKvStore::new(&kv_path2, &kv_config2).unwrap());
 
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
         rp_id: "localhost".to_string(),
@@ -164,28 +181,40 @@ async fn test_start_registration_with_multiple_devices() {
         .unwrap();
     let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
 
+    let node_data_1 = NodeData {
+        id: "device-1".to_string(),
+        private_key: vec![0u8; 32],
+        public_key: vec![0u8; 32],
+    };
+
+    let network_manager_1 = NetworkManager::new(&node_data_1).await.unwrap();
+    let network_manager_1 = Arc::new(network_manager_1);
+
     let node1 = Node::new(
-        NodeData {
-            id: "device-1".to_string(),
-            private_key: vec![0u8; 32],
-            public_key: vec![0u8; 32],
-        },
+        node_data_1,
         db.clone(),
-        kv1,
+        kv1, // Now Arc<dyn KvStore>
         AuthState::new(auth_config.clone()).unwrap(),
         pipeline_manager.clone(),
+        network_manager_1,
     );
 
+    let node_data_2 = NodeData {
+        id: "device-2".to_string(),
+        private_key: vec![1u8; 32],
+        public_key: vec![1u8; 32],
+    };
+
+    let network_manager_2 = NetworkManager::new(&node_data_2).await.unwrap();
+    let network_manager_2 = Arc::new(network_manager_2);
+
     let node2 = Node::new(
-        NodeData {
-            id: "device-2".to_string(),
-            private_key: vec![1u8; 32],
-            public_key: vec![1u8; 32],
-        },
+        node_data_2,
         db.clone(),
-        kv2,
+        kv2, // Now Arc<dyn KvStore>
         AuthState::new(auth_config).unwrap(),
         pipeline_manager,
+        network_manager_2,
     );
 
     // Execute: Start registration on both nodes
@@ -214,7 +243,7 @@ async fn test_end_to_end_registration_and_authentication() {
     Migrator::up(&db, None).await.unwrap();
 
     let kv_path = temp_dir.path().join("kv");
-    let kv = sled::open(&kv_path).unwrap();
+    let kv = crate::bootstrap::init::setup_kv_from_path(&kv_path).unwrap();
 
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
         rp_id: "localhost".to_string(),
@@ -227,16 +256,22 @@ async fn test_end_to_end_registration_and_authentication() {
         .unwrap();
     let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
 
+    let node_data = NodeData {
+        id: "test-device-e2e".to_string(),
+        private_key: vec![0u8; 32],
+        public_key: vec![0u8; 32],
+    };
+
+    let network_manager = NetworkManager::new(&node_data).await.unwrap();
+    let network_manager = Arc::new(network_manager);
+
     let node = Node::new(
-        NodeData {
-            id: "test-device-e2e".to_string(),
-            private_key: vec![0u8; 32],
-            public_key: vec![0u8; 32],
-        },
+        node_data,
         db.clone(),
         kv,
         AuthState::new(auth_config).unwrap(),
         pipeline_manager,
+        network_manager,
     );
 
     // ===== REGISTRATION FLOW =====

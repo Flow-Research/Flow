@@ -1,6 +1,11 @@
+use std::sync::Arc;
+
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::config::IndexingConfig;
 use crate::modules::ai::pipeline_manager::PipelineManager;
+use crate::modules::network::config::NetworkConfig;
+use crate::modules::network::manager::NetworkManager;
+use crate::modules::storage::{KvConfig, KvStore, RocksDbKvStore};
 use crate::{
     api::{
         node::Node,
@@ -12,13 +17,13 @@ use crate::{
 use errors::AppError;
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, DatabaseConnection};
-use sled::Db;
 use tracing::info;
 
 struct InfrastructureServices {
     node_data: NodeData,
     db_conn: DatabaseConnection,
-    kv: Db,
+    kv: Arc<dyn KvStore>,
+    network_manager: Arc<NetworkManager>,
 }
 
 struct ApplicationServices {
@@ -61,11 +66,15 @@ async fn init_infrastructure(config: &Config) -> Result<InfrastructureServices, 
         setup_kv_store(config)
     )?;
 
+    let network_manager = NetworkManager::new(&node_data).await?;
+    let network_manager = Arc::new(network_manager);
+
     info!("Infrastructure initialized successfully");
     Ok(InfrastructureServices {
         node_data,
         db_conn,
         kv,
+        network_manager,
     })
 }
 
@@ -110,9 +119,20 @@ async fn setup_database(config: &Config) -> Result<DatabaseConnection, AppError>
     Ok(connection)
 }
 
-async fn setup_kv_store(config: &Config) -> Result<Db, AppError> {
-    info!("Setting up KVStore");
-    Ok(sled::open(config.kv.path.as_str()).unwrap())
+async fn setup_kv_store(config: &Config) -> Result<Arc<dyn KvStore>, AppError> {
+    info!("Setting up KV Store with RocksDB");
+
+    let kv_config = KvConfig {
+        path: config.kv.path.clone().into(),
+        enable_compression: true,
+        max_open_files: 1000,
+        write_buffer_size: 64 * 1024 * 1024, // 64MB
+    };
+
+    let store = RocksDbKvStore::new(&config.kv.path, &kv_config)
+        .map_err(|e| AppError::Storage(format!("Failed to initialize KV store: {}", e).into()))?;
+
+    Ok(Arc::new(store))
 }
 
 async fn init_pipeline_manager(db_conn: &DatabaseConnection) -> Result<PipelineManager, AppError> {
@@ -135,6 +155,7 @@ fn assemble_application(infra: InfrastructureServices, services: ApplicationServ
         infra.kv,
         services.auth_state,
         services.pipeline_manager,
+        infra.network_manager,
     );
     AppState::new(node)
 }
@@ -142,10 +163,29 @@ fn assemble_application(infra: InfrastructureServices, services: ApplicationServ
 async fn run_servers(app_state: AppState, config: Config) -> Result<(), AppError> {
     info!("Starting servers...");
 
+    {
+        let node = app_state.node.read().await;
+        let network_config = NetworkConfig::from_env();
+        node.network_manager.start(&network_config).await?;
+        info!("Network manager started");
+    }
+
     tokio::select! {
         result = rest::start(&app_state, &config) => result?,
         result = websocket::start(&app_state, &config) => result?,
-        _ = tokio::signal::ctrl_c() => info!("Shutdown signal received"),
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received");
+
+            // NEW: Stop network manager gracefully
+            let node = app_state.node.read().await;
+            node.network_manager.stop().await?;
+
+            // Flush KV store
+            info!("Flushing KV store...");
+            if let Err(e) = node.kv.flush() {
+                tracing::error!("Failed to flush KV store: {}", e);
+            }
+        },
     }
 
     info!("Application shutdown complete.");

@@ -2,8 +2,8 @@
 mod fixtures;
 
 use event::{
-    store::SignedPayload, Dispatcher, Event, EventError, EventHandler, EventStore,
-    PersistentSubscription,
+    store::SignedPayload, Dispatcher, Event, EventError, EventHandler, EventStoreConfig,
+    PersistentSubscription, RocksDbEventStore,
 };
 use fixtures::*;
 use std::sync::{Arc, Mutex};
@@ -126,7 +126,7 @@ fn test_persistent_subscription_creation() {
     let handler = CollectorHandler::new("test_handler");
 
     let subscription = PersistentSubscription::new(
-        store.db(),
+        Arc::clone(store.db()),
         handler,
         1000, // idempotency window
     );
@@ -139,7 +139,7 @@ fn test_persistent_subscription_bookmark_default() {
     let (store, _temp_dir) = create_test_store();
     let handler = CollectorHandler::new("test_handler");
 
-    let subscription = PersistentSubscription::new(store.db(), handler, 1000).unwrap();
+    let subscription = PersistentSubscription::new(Arc::clone(store.db()), handler, 1000).unwrap();
 
     let bookmark = subscription.bookmark().unwrap();
     assert_eq!(bookmark, 0);
@@ -158,9 +158,14 @@ fn test_persistent_subscription_process_batch() {
 
     // Collect events via subscription
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
-    let events: Vec<_> = store.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_from(0)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     subscription.process_batch(&events).unwrap();
 
     assert_eq!(handler.count(), 5);
@@ -178,9 +183,14 @@ fn test_persistent_subscription_idempotency() {
     }
 
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
-    let events: Vec<_> = store.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_from(0)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
     // Process batch twice
     subscription.process_batch(&events).unwrap();
@@ -202,9 +212,14 @@ fn test_persistent_subscription_bookmark_advances() {
     }
 
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
-    let events: Vec<_> = store.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_from(0)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     subscription.process_batch(&events).unwrap();
 
     // Bookmark should advance to last processed offset
@@ -225,9 +240,14 @@ fn test_persistent_subscription_filter() {
 
     // Handler that filters for TestEvent
     let handler = FilteringHandler::new("filter_handler", "TestEvent");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
-    let events: Vec<_> = store.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_from(0)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     subscription.process_batch(&events).unwrap();
 
     // All events should be TestEvent, so all should be processed
@@ -241,9 +261,14 @@ fn test_persistent_subscription_handler_failure() {
     store.append(create_signed_payload("Msg", 1)).unwrap();
 
     let handler = FailingHandler::new("failing_handler", 1);
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
-    let events: Vec<_> = store.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_from(0)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     let result = subscription.process_batch(&events);
 
     // Should fail
@@ -277,7 +302,8 @@ fn test_dispatcher_poll_no_events() {
     let dispatcher = Dispatcher::new(&store);
 
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
     let result = dispatcher.poll(&mut subscription);
 
@@ -298,7 +324,8 @@ fn test_dispatcher_poll_processes_events() {
 
     let dispatcher = Dispatcher::new(&store);
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
     dispatcher.poll(&mut subscription).unwrap();
 
@@ -318,7 +345,8 @@ fn test_dispatcher_poll_batching() {
 
     let dispatcher = Dispatcher::new(&store).with_batch_size(100);
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
     dispatcher.poll(&mut subscription).unwrap();
 
@@ -339,7 +367,8 @@ fn test_dispatcher_poll_incremental() {
 
     let dispatcher = Dispatcher::new(&store);
     let handler = CollectorHandler::new("collector");
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
     // First poll
     dispatcher.poll(&mut subscription).unwrap();
@@ -371,11 +400,11 @@ fn test_multiple_subscriptions_same_store() {
     // Create two subscriptions with different handlers
     let handler1 = CollectorHandler::new("handler1");
     let mut subscription1 =
-        PersistentSubscription::new(store.db(), handler1.clone(), 1000).unwrap();
+        PersistentSubscription::new(Arc::clone(store.db()), handler1.clone(), 1000).unwrap();
 
     let handler2 = CollectorHandler::new("handler2");
     let mut subscription2 =
-        PersistentSubscription::new(store.db(), handler2.clone(), 1000).unwrap();
+        PersistentSubscription::new(Arc::clone(store.db()), handler2.clone(), 1000).unwrap();
 
     let dispatcher = Dispatcher::new(&store);
 
@@ -401,10 +430,11 @@ fn test_subscription_maintains_independent_bookmarks() {
 
     let handler1 = CollectorHandler::new("handler1");
     let mut subscription1 =
-        PersistentSubscription::new(store.db(), handler1.clone(), 1000).unwrap();
+        PersistentSubscription::new(Arc::clone(store.db()), handler1.clone(), 1000).unwrap();
 
     let handler2 = CollectorHandler::new("handler2");
-    let subscription2 = PersistentSubscription::new(store.db(), handler2.clone(), 1000).unwrap();
+    let subscription2 =
+        PersistentSubscription::new(Arc::clone(store.db()), handler2.clone(), 1000).unwrap();
 
     let dispatcher = Dispatcher::new(&store);
 
@@ -423,15 +453,17 @@ fn test_subscription_maintains_independent_bookmarks() {
 
 // Helper functions
 
-fn create_test_store() -> (EventStore, TempDir) {
+fn create_test_store() -> (RocksDbEventStore, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
-    let store = EventStore::new(
-        temp_dir.path(),
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
         "test_stream".to_string(),
         "test_space".to_string(),
         validator,
+        config,
     )
     .unwrap();
 

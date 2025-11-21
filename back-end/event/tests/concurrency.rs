@@ -1,7 +1,7 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
-use event::{store::SignedPayload, EventStore};
+use event::{store::SignedPayload, EventStoreConfig, RocksDbEventStore};
 use fixtures::*;
 use serial_test::serial;
 use std::sync::{Arc, Barrier};
@@ -13,13 +13,15 @@ use tempfile::TempDir;
 fn test_concurrent_appends_single_actor() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
     let store = Arc::new(
-        EventStore::new(
-            temp_dir.path(),
+        RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "concurrent_stream".to_string(),
             "concurrent_space".to_string(),
             validator,
+            config,
         )
         .unwrap(),
     );
@@ -65,7 +67,12 @@ fn test_concurrent_appends_single_actor() {
     assert_eq!(count, thread_count * events_per_thread);
 
     // Verify hash chain is valid
-    let events: Vec<_> = store.iter_events().collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_events()
+        .unwrap()
+        .map(|r| r.map(|(_, e)| e))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert!(event::Event::verify_chain_sequence(&events).unwrap());
 }
 
@@ -74,13 +81,15 @@ fn test_concurrent_appends_single_actor() {
 fn test_concurrent_appends_multiple_actors() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
     let store = Arc::new(
-        EventStore::new(
-            temp_dir.path(),
+        RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "multi_actor_stream".to_string(),
             "multi_actor_space".to_string(),
             validator,
+            config,
         )
         .unwrap(),
     );
@@ -133,7 +142,12 @@ fn test_concurrent_appends_multiple_actors() {
     }
 
     // Verify hash chain
-    let events: Vec<_> = store.iter_events().collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<_> = store
+        .iter_events()
+        .unwrap()
+        .map(|r| r.map(|(_, e)| e))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert!(event::Event::verify_chain_sequence(&events).unwrap());
 }
 
@@ -142,13 +156,15 @@ fn test_concurrent_appends_multiple_actors() {
 fn test_concurrent_read_write() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
     let store = Arc::new(
-        EventStore::new(
-            temp_dir.path(),
+        RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "read_write_stream".to_string(),
             "read_write_space".to_string(),
             validator,
+            config,
         )
         .unwrap(),
     );
@@ -197,6 +213,7 @@ fn test_concurrent_read_write() {
                 if count > 0 {
                     let _events: Vec<_> = store_reader
                         .iter_range(0, count.min(10) as u64)
+                        .unwrap()
                         .collect::<Result<Vec<_>, _>>()
                         .unwrap();
                 }
@@ -261,13 +278,15 @@ fn test_subscription_concurrent_processing() {
 
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
     let store = Arc::new(
-        EventStore::new(
-            temp_dir.path(),
+        RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "subscription_stream".to_string(),
             "subscription_space".to_string(),
             validator,
+            config,
         )
         .unwrap(),
     );
@@ -311,7 +330,7 @@ fn test_subscription_concurrent_processing() {
         .collect();
 
     for i in 0..handler_count {
-        let store_db = store.db().clone();
+        let store_db = Arc::clone(store.db());
         let store_for_dispatch = Arc::clone(&store);
         let count_clone = Arc::clone(&counts[i]);
 
@@ -321,7 +340,7 @@ fn test_subscription_concurrent_processing() {
                 name: format!("handler_{}", i),
             };
 
-            let mut subscription = PersistentSubscription::new(&store_db, handler, 1000).unwrap();
+            let mut subscription = PersistentSubscription::new(store_db, handler, 1000).unwrap();
 
             let dispatcher = Dispatcher::new(&store_for_dispatch);
             dispatcher.poll(&mut subscription).unwrap();

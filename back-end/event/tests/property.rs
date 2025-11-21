@@ -2,7 +2,7 @@
 mod fixtures;
 
 use chrono::TimeZone;
-use event::{store::SignedPayload, Event, EventStore};
+use event::{store::SignedPayload, Event, EventStoreConfig, RocksDbEventStore};
 use fixtures::*;
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -112,11 +112,13 @@ proptest! {
     fn prop_store_preserves_order(payloads in prop::collection::vec(arb_test_payload(), 1..50)) {
         let temp_dir = TempDir::new().unwrap();
         let validator = create_test_validator();
-        let store = EventStore::new(
-            temp_dir.path(),
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "prop_stream".to_string(),
             "prop_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
@@ -132,7 +134,10 @@ proptest! {
         }
 
         // Retrieve and verify order
-        let events: Vec<Event> = store.iter_events()
+        let events: Vec<Event> = store
+            .iter_events()
+            .unwrap()
+            .map(|r| r.map(|(_, e)| e))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -148,11 +153,13 @@ proptest! {
     fn prop_hash_chain_always_valid(payloads in prop::collection::vec(arb_test_payload(), 2..20)) {
         let temp_dir = TempDir::new().unwrap();
         let validator = create_test_validator();
-        let store = EventStore::new(
-            temp_dir.path(),
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
+            temp_dir.path().join("events"),
             "prop_chain_stream".to_string(),
             "prop_chain_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
@@ -166,7 +173,10 @@ proptest! {
             store.append(signed).unwrap();
         }
 
-        let events: Vec<Event> = store.iter_events()
+        let events: Vec<Event> = store
+            .iter_events()
+            .unwrap()
+            .map(|r| r.map(|(_, e)| e))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -195,6 +205,97 @@ proptest! {
         let s = String::from_utf8(canonical).unwrap();
         prop_assert!(!s.contains("\"sig\""));
         prop_assert!(!s.contains("\"sig_type\""));
+    }
+
+    #[test]
+    fn prop_rocksdb_persistence(payloads in prop::collection::vec(arb_test_payload(), 1..30)) {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("events");
+        let validator = create_test_validator();
+        let config = EventStoreConfig::default();
+
+        // Phase 1: Write events
+        {
+            let store = RocksDbEventStore::new(
+                &path,
+                "prop_persist_stream".to_string(),
+                "prop_persist_space".to_string(),
+                validator,
+                config.clone(),
+            )
+            .unwrap();
+
+            for payload in &payloads {
+                let signed = SignedPayload {
+                    payload: payload.clone(),
+                    signer_did: test_did("alice"),
+                    signature: fake_signature(&payload.message),
+                    signature_type: "Ed25519".to_string(),
+                };
+                store.append(signed).unwrap();
+            }
+        }
+
+        let validator = create_test_validator();
+
+        // Phase 2: Reopen and verify
+        {
+            let store = RocksDbEventStore::new(
+                &path,
+                "prop_persist_stream".to_string(),
+                "prop_persist_space".to_string(),
+                validator,
+                config,
+            )
+            .unwrap();
+
+            let events: Vec<Event> = store
+                .iter_events()
+                .unwrap()
+                .map(|r| r.map(|(_, e)| e))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+
+            prop_assert_eq!(events.len(), payloads.len());
+
+            // Verify hash chain is still valid
+            prop_assert!(Event::verify_chain_sequence(&events).unwrap());
+        }
+    }
+
+    #[test]
+    fn prop_hash_index_correctness(payloads in prop::collection::vec(arb_test_payload(), 1..20)) {
+        let temp_dir = TempDir::new().unwrap();
+        let validator = create_test_validator();
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
+            temp_dir.path().join("events"),
+            "prop_index_stream".to_string(),
+            "prop_index_space".to_string(),
+            validator,
+            config,
+        )
+        .unwrap();
+
+        // Append events and collect their hashes
+        let mut expected_hashes = Vec::new();
+        for (offset, payload) in payloads.iter().enumerate() {
+            let signed = SignedPayload {
+                payload: payload.clone(),
+                signer_did: test_did("alice"),
+                signature: fake_signature(&payload.message),
+                signature_type: "Ed25519".to_string(),
+            };
+            let event = store.append(signed).unwrap();
+            let hash = event.compute_hash().unwrap();
+            expected_hashes.push((offset as u64, hash));
+        }
+
+        // Verify every hash can be looked up correctly
+        for (expected_offset, hash) in expected_hashes {
+            let found_offset = store.get_offset_by_hash(&hash).unwrap();
+            prop_assert_eq!(found_offset, Some(expected_offset));
+        }
     }
 }
 

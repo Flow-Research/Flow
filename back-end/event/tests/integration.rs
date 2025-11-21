@@ -2,8 +2,8 @@
 mod fixtures;
 
 use event::{
-    store::SignedPayload, Dispatcher, Event, EventError, EventHandler, EventStore,
-    PersistentSubscription,
+    store::SignedPayload, Dispatcher, Event, EventError, EventHandler, EventStoreConfig,
+    PersistentSubscription, RocksDbEventStore,
 };
 use fixtures::*;
 use std::sync::{Arc, Mutex};
@@ -13,13 +13,15 @@ use tempfile::TempDir;
 fn test_end_to_end_event_flow() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
     // 1. Create event store
-    let store = EventStore::new(
-        temp_dir.path(),
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
         "integration_stream".to_string(),
         "integration_space".to_string(),
         validator,
+        config,
     )
     .unwrap();
 
@@ -51,7 +53,12 @@ fn test_end_to_end_event_flow() {
     }
 
     // 3. Verify hash chain integrity
-    let events: Vec<Event> = store.iter_events().collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<Event> = store
+        .iter_events()
+        .unwrap()
+        .map(|r| r.map(|(_, e)| e))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
     assert_eq!(events.len(), 10);
     assert!(Event::verify_chain_sequence(&events).unwrap());
@@ -63,7 +70,8 @@ fn test_end_to_end_event_flow() {
 
     // 5. Process events with handlers
     let handler = CollectingHandler::new();
-    let mut subscription = PersistentSubscription::new(store.db(), handler.clone(), 1000).unwrap();
+    let mut subscription =
+        PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
 
     let dispatcher = Dispatcher::new(&store);
     dispatcher.poll(&mut subscription).unwrap();
@@ -74,18 +82,20 @@ fn test_end_to_end_event_flow() {
 #[test]
 fn test_store_persistence_and_recovery() {
     let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().to_path_buf();
+    let path = temp_dir.path().join("events");
 
     let original_events_count = 20;
 
     // Phase 1: Create store and populate
     {
         let validator = create_test_validator();
-        let store = EventStore::new(
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
             &path,
             "persistent_stream".to_string(),
             "persistent_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
@@ -108,18 +118,25 @@ fn test_store_persistence_and_recovery() {
     // Phase 2: Reopen store and verify
     {
         let validator = create_test_validator();
-        let store = EventStore::new(
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
             &path,
             "persistent_stream".to_string(),
             "persistent_space".to_string(),
             validator,
+            config,
         )
         .unwrap();
 
         assert_eq!(store.event_count().unwrap(), original_events_count as usize);
 
         // Verify hash chain is intact
-        let events: Vec<Event> = store.iter_events().collect::<Result<Vec<_>, _>>().unwrap();
+        let events: Vec<Event> = store
+            .iter_events()
+            .unwrap()
+            .map(|r| r.map(|(_, e)| e))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert!(Event::verify_chain_sequence(&events).unwrap());
 
@@ -149,16 +166,18 @@ fn test_concurrent_readers_single_writer() {
     use std::thread;
 
     let temp_dir = TempDir::new().unwrap();
-    let path = temp_dir.path().to_path_buf();
+    let path = temp_dir.path().join("events");
 
     // Open one shared store and reuse it across threads
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
     let store = Arc::new(
-        EventStore::new(
+        RocksDbEventStore::new(
             &path,
             "concurrent_stream".to_string(),
             "concurrent_space".to_string(),
             validator,
+            config,
         )
         .unwrap(),
     );
@@ -193,6 +212,8 @@ fn test_concurrent_readers_single_writer() {
             for _ in 0..5 {
                 let _events: Vec<Event> = store_reader
                     .iter_events()
+                    .unwrap()
+                    .map(|r| r.map(|(_, e)| e))
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap();
                 thread::sleep(std::time::Duration::from_millis(20));
@@ -212,12 +233,14 @@ fn test_concurrent_readers_single_writer() {
 fn test_multi_handler_processing() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
-    let store = EventStore::new(
-        temp_dir.path(),
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
         "multi_handler_stream".to_string(),
         "multi_handler_space".to_string(),
         validator,
+        config,
     )
     .unwrap();
 
@@ -240,9 +263,12 @@ fn test_multi_handler_processing() {
     let handler2 = CountingHandler::new();
     let handler3 = SumHandler::new();
 
-    let mut sub1 = PersistentSubscription::new(store.db(), handler1.clone(), 1000).unwrap();
-    let mut sub2 = PersistentSubscription::new(store.db(), handler2.clone(), 1000).unwrap();
-    let mut sub3 = PersistentSubscription::new(store.db(), handler3.clone(), 1000).unwrap();
+    let mut sub1 =
+        PersistentSubscription::new(Arc::clone(store.db()), handler1.clone(), 1000).unwrap();
+    let mut sub2 =
+        PersistentSubscription::new(Arc::clone(store.db()), handler2.clone(), 1000).unwrap();
+    let mut sub3 =
+        PersistentSubscription::new(Arc::clone(store.db()), handler3.clone(), 1000).unwrap();
 
     let dispatcher = Dispatcher::new(&store);
 
@@ -261,12 +287,14 @@ fn test_multi_handler_processing() {
 fn test_version_migration_scenario() {
     let temp_dir = TempDir::new().unwrap();
     let validator = create_test_validator();
+    let config = EventStoreConfig::default();
 
-    let store = EventStore::new(
-        temp_dir.path(),
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
         "migration_stream".to_string(),
         "migration_space".to_string(),
         validator,
+        config,
     )
     .unwrap();
 
@@ -300,13 +328,136 @@ fn test_version_migration_scenario() {
     // Verify both versions coexist
     assert_eq!(store.event_count().unwrap(), 10);
 
-    let events: Vec<Event> = store.iter_events().collect::<Result<Vec<_>, _>>().unwrap();
+    let events: Vec<Event> = store
+        .iter_events()
+        .unwrap()
+        .map(|r| r.map(|(_, e)| e))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
 
     let v1_count = events.iter().filter(|e| e.schema_version == 1).count();
     let v2_count = events.iter().filter(|e| e.schema_version == 2).count();
 
     assert_eq!(v1_count, 5);
     assert_eq!(v2_count, 5);
+}
+
+#[test]
+fn test_subscription_idempotency_across_restarts() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("events");
+
+    // Phase 1: Create store and append events
+    {
+        let validator = create_test_validator();
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
+            &path,
+            "restart_stream".to_string(),
+            "restart_space".to_string(),
+            validator,
+            config,
+        )
+        .unwrap();
+
+        for i in 0..10 {
+            let payload = SignedPayload {
+                payload: TestPayload {
+                    message: format!("Message {}", i),
+                    count: i,
+                },
+                signer_did: test_did("alice"),
+                signature: fake_signature(&format!("sig_{}", i)),
+                signature_type: "Ed25519".to_string(),
+            };
+            store.append(payload).unwrap();
+        }
+
+        // Process first 5 events
+        let handler = CountingHandler::new();
+        let mut subscription =
+            PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
+
+        let events: Vec<_> = store
+            .iter_range(0, 5)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        subscription.process_batch(&events).unwrap();
+
+        assert_eq!(handler.count(), 5);
+        assert_eq!(subscription.bookmark().unwrap(), 4);
+    }
+
+    // Phase 2: Reopen store and continue processing
+    {
+        let validator = create_test_validator();
+        let config = EventStoreConfig::default();
+        let store = RocksDbEventStore::new(
+            &path,
+            "restart_stream".to_string(),
+            "restart_space".to_string(),
+            validator,
+            config,
+        )
+        .unwrap();
+
+        let handler = CountingHandler::new();
+        let mut subscription =
+            PersistentSubscription::new(Arc::clone(store.db()), handler.clone(), 1000).unwrap();
+
+        // Bookmark should be persisted
+        assert_eq!(subscription.bookmark().unwrap(), 4);
+
+        // Poll should only process remaining events
+        let dispatcher = Dispatcher::new(&store);
+        dispatcher.poll(&mut subscription).unwrap();
+
+        assert_eq!(handler.count(), 5); // Only events 5-9
+    }
+}
+
+#[test]
+fn test_hash_deduplication_index() {
+    let temp_dir = TempDir::new().unwrap();
+    let validator = create_test_validator();
+    let config = EventStoreConfig::default();
+
+    let store = RocksDbEventStore::new(
+        temp_dir.path().join("events"),
+        "dedup_stream".to_string(),
+        "dedup_space".to_string(),
+        validator,
+        config,
+    )
+    .unwrap();
+
+    // Append events
+    for i in 0..5 {
+        let payload = SignedPayload {
+            payload: TestPayload {
+                message: format!("Message {}", i),
+                count: i,
+            },
+            signer_did: test_did("alice"),
+            signature: fake_signature(&format!("sig_{}", i)),
+            signature_type: "Ed25519".to_string(),
+        };
+        store.append(payload).unwrap();
+    }
+
+    // Verify each event can be found by hash
+    for offset in 0..5 {
+        let event = store.get_event(offset).unwrap().unwrap();
+        let hash = event.compute_hash().unwrap();
+        let found_offset = store.get_offset_by_hash(&hash).unwrap();
+
+        assert_eq!(found_offset, Some(offset));
+    }
+
+    // Non-existent hash should return None
+    let fake_hash = "0".repeat(64);
+    assert_eq!(store.get_offset_by_hash(&fake_hash).unwrap(), None);
 }
 
 // Helper handlers
