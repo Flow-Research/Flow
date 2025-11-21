@@ -1,6 +1,6 @@
 # Flow Architecture Overview
 
-Flow is a decentralized coordination platform enabling agents and users to co-create, manage, and reward knowledge, tasks, and compute in a verifiable, local-first environment.
+Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data local or in trusted environments, agents execute with signed events and receipts, state converges via CRDTs even offline, and programmable incentives settle contributions automatically with provenance and privacy by default.
 
 
 ## Core Principles
