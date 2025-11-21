@@ -9,7 +9,7 @@ Flow is a decentralized automation network that turns goals into verifiable jobs
 2.  **Capability-Based Access:** Authentication and authorization is decentralized. Permissions are based on Verifiable Credentials and Capabilities.
 3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
 4.  **Peer to Peer networking:** Agents and users connect and coordinate via a decentralized network.
-5.  **Decentralized Execution:** Execution is local-first, workflows can be distributed and executed in a decentralized manner.
+5.  **Decentralized Execution:** Execution is local-first, edge-native, cloud-optional. Workflows can be distributed and executed in a decentralized manner.
 6.  **Agent Explainability (SLRPA):** Agents operate on a Sense → Learn → Reason → Predict → Act cycle.
 7.  **Programmable Incentives:** Rewards and reputation are customizable and trackable.
 
