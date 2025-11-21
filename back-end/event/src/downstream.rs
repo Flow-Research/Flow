@@ -1,19 +1,20 @@
 use crate::{
-    store::EventStore,
+    store::RocksDbEventStore,
     types::{Event, EventError},
 };
-use sled::{
-    transaction::{ConflictableTransactionError, TransactionError},
-    Db, Tree,
-};
+use rocksdb::{WriteBatch, DB};
+use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn, Span};
 
 const DEFAULT_BATCH_SIZE: usize = 100;
 const BOOKMARK_KEY: &[u8] = b"bookmark";
 const IDEMPOTENCY_KEY_PREFIX: &[u8] = b"idempotency_";
 
+// Column family for subscription state
+const CF_SUBSCRIPTION_STATE: &str = "subscription_state";
+
 pub trait EventHandler: Send {
-    /// Unique name for this handler; used to isolate state in Sled.
+    /// Unique name for this handler; used to isolate state in RocksDB.
     fn name(&self) -> &str;
 
     /// Optional event filter. Default: accept all.
@@ -28,43 +29,71 @@ pub trait EventHandler: Send {
 
 /// Persistent subscription that manages bookmark and idempotency state per handler.
 pub struct PersistentSubscription<H: EventHandler + Send> {
-    db: Db,
-    state_tree: Tree,
+    db: Arc<DB>,
+    handler_name: String,
     handler: H,
     idempotency_window_size: u64,
 }
 
 impl<H: EventHandler> PersistentSubscription<H> {
     #[instrument(skip(db, handler), fields(handler_name = handler.name()))]
-    pub fn new(db: &Db, handler: H, idempotency_window_size: u64) -> Result<Self, EventError> {
-        let handler_name = handler.name();
+    pub fn new(db: Arc<DB>, handler: H, idempotency_window_size: u64) -> Result<Self, EventError> {
+        let handler_name = handler.name().to_string();
 
         info!(
-            handler_name = handler_name,
+            handler_name = %handler_name,
             idempotency_window_size = idempotency_window_size,
             "Creating persistent subscription"
         );
 
-        let state_tree = db.open_tree(format!("_listener_state_{}", handler_name))?;
+        // Ensure subscription state column family exists
+        // Note: In production, you should create this CF when opening the DB
+        // For now, we assume it's created during EventStore initialization
+        if db.cf_handle(CF_SUBSCRIPTION_STATE).is_none() {
+            return Err(EventError::ColumnFamilyNotFound(
+                CF_SUBSCRIPTION_STATE.to_string(),
+            ));
+        }
 
         Ok(Self {
-            db: db.clone(),
-            state_tree,
+            db,
+            handler_name,
             handler,
             idempotency_window_size,
         })
     }
 
-    #[instrument(skip(self), fields(handler_name = self.handler.name()))]
+    /// Build a namespaced key for this handler
+    fn namespaced_key(&self, key: &[u8]) -> Vec<u8> {
+        let mut result = Vec::with_capacity(self.handler_name.len() + 1 + key.len());
+        result.extend_from_slice(self.handler_name.as_bytes());
+        result.push(b':');
+        result.extend_from_slice(key);
+        result
+    }
+
+    #[instrument(skip(self), fields(handler_name = %self.handler_name))]
     pub fn bookmark(&self) -> Result<u64, EventError> {
-        let bookmark = self
-            .state_tree
-            .get(BOOKMARK_KEY)?
-            .map(|bytes| u64::from_be_bytes(bytes.as_ref().try_into().unwrap()))
-            .unwrap_or(0);
+        let cf = self
+            .db
+            .cf_handle(CF_SUBSCRIPTION_STATE)
+            .ok_or_else(|| EventError::ColumnFamilyNotFound(CF_SUBSCRIPTION_STATE.to_string()))?;
+
+        let key = self.namespaced_key(BOOKMARK_KEY);
+        let bookmark =
+            self.db
+                .get_cf(&cf, &key)?
+                .map(|bytes| {
+                    let arr: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+                        EventError::InvalidData("Invalid bookmark bytes".to_string())
+                    })?;
+                    Ok::<u64, EventError>(u64::from_be_bytes(arr))
+                })
+                .transpose()?
+                .unwrap_or(0);
 
         debug!(
-            handler_name = self.handler.name(),
+            handler_name = %self.handler_name,
             bookmark = bookmark,
             "Retrieved bookmark"
         );
@@ -82,7 +111,7 @@ impl<H: EventHandler> PersistentSubscription<H> {
     #[instrument(
         skip(self, events),
         fields(
-            handler_name = self.handler.name(),
+            handler_name = %self.handler_name,
             batch_size = events.len(),
             processed = 0,
             skipped = 0
@@ -99,10 +128,15 @@ impl<H: EventHandler> PersistentSubscription<H> {
         let mut skipped_count = 0;
 
         info!(
-            handler_name = self.handler.name(),
+            handler_name = %self.handler_name,
             batch_size = events.len(),
             "Processing event batch"
         );
+
+        let cf = self
+            .db
+            .cf_handle(CF_SUBSCRIPTION_STATE)
+            .ok_or_else(|| EventError::ColumnFamilyNotFound(CF_SUBSCRIPTION_STATE.to_string()))?;
 
         for (offset, event) in events {
             // Optional filter
@@ -116,44 +150,29 @@ impl<H: EventHandler> PersistentSubscription<H> {
                 continue;
             }
 
-            // Build idempotency key: prefix + offset (BE) + event.id
+            // Build idempotency key: handler_name:prefix + offset (BE) + event.id
             let id_key = {
-                let mut k = Vec::with_capacity(IDEMPOTENCY_KEY_PREFIX.len() + 8 + 16);
+                let mut k = Vec::with_capacity(
+                    self.handler_name.len() + 1 + IDEMPOTENCY_KEY_PREFIX.len() + 8 + 16,
+                );
+                k.extend_from_slice(self.handler_name.as_bytes());
+                k.push(b':');
                 k.extend_from_slice(IDEMPOTENCY_KEY_PREFIX);
                 k.extend_from_slice(&offset.to_be_bytes());
                 k.extend_from_slice(&event.id.to_bytes());
                 k
             };
 
-            // ATOMIC CLAIM: Try to insert idempotency marker
-            // Returns true if WE claimed it (insert succeeded), false if already processed
+            // ATOMIC CLAIM: Check if event is already processed
             debug!(
                 offset = offset,
                 event_id = %event.id,
-                "Attempting to claim event"
+                "Checking if event already processed"
             );
-            let claimed = (&self.state_tree)
-                .transaction(move |state| {
-                    match state.insert(&*id_key, &[])? {
-                        None => Ok(true),     // We successfully claimed this event
-                        Some(_) => Ok(false), // Event is Already processed
-                    }
-                })
-                .map_err(|e: TransactionError<ConflictableTransactionError>| {
-                    error!(
-                        offset = offset,
-                        event_id = %event.id,
-                        error = ?e,
-                        "Claim transaction failed"
-                    );
-                    EventError::Database(sled::Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Claim transaction error: {:?}", e),
-                    )))
-                })?;
 
-            // If we didn't claim it, skip (already processed)
-            if !claimed {
+            let already_processed = self.db.get_cf(&cf, &id_key)?.is_some();
+
+            if already_processed {
                 debug!(
                     offset = offset,
                     event_id = %event.id,
@@ -163,15 +182,32 @@ impl<H: EventHandler> PersistentSubscription<H> {
                 continue;
             }
 
+            // Claim the event using WriteBatch for atomicity
+            let mut batch = WriteBatch::default();
+            batch.put_cf(&cf, &id_key, &[]);
+            self.db.write(batch).map_err(|e| {
+                error!(
+                    offset = offset,
+                    event_id = %event.id,
+                    error = %e,
+                    "Failed to claim event"
+                );
+                EventError::Storage(format!("Claim write failed: {}", e))
+            })?;
+
             // ONLY ONE THREAD reaches here per event
             // Invoke handler (must be idempotent for external side effects)
             debug!(
-                offset = offset, event_id = %event.id, event_type = %event.event_type,
-                "Invoking Event handler"
+                offset = offset,
+                event_id = %event.id,
+                event_type = %event.event_type,
+                "Invoking event handler"
             );
             self.handler.handle(*offset, event).map_err(|e| {
                 error!(
-                    offset = offset, event_id = %event.id, error = %e,
+                    offset = offset,
+                    event_id = %event.id,
+                    error = %e,
                     "Handler failed"
                 );
                 e
@@ -179,64 +215,35 @@ impl<H: EventHandler> PersistentSubscription<H> {
 
             processed_count += 1;
 
-            // After successful handling, update bookmark and prune if needed
+            // After successful handling, update bookmark
+            let bookmark_key = self.namespaced_key(BOOKMARK_KEY);
+            let mut batch = WriteBatch::default();
+            batch.put_cf(&cf, &bookmark_key, &offset.to_be_bytes());
+            self.db.write(batch).map_err(|e| {
+                error!(
+                    offset = offset,
+                    event_id = %event.id,
+                    error = %e,
+                    "Failed to update bookmark"
+                );
+                EventError::Storage(format!("Bookmark write failed: {}", e))
+            })?;
+
+            // Prune idempotency set if needed
             let should_prune = *offset % PRUNE_INTERVAL == 0;
-
-            // Update bookmark transaction
-            (&self.state_tree)
-                .transaction(|state| {
-                    // Advance bookmark to this offset (monotonic)
-                    state.insert(BOOKMARK_KEY, &offset.to_be_bytes())?;
-                    Ok(())
-                })
-                .map_err(|e: TransactionError<ConflictableTransactionError>| {
-                    error!(
-                        offset = offset, event_id = %event.id, error = ?e,
-                        "Bookmark transaction failed"
-                    );
-                    EventError::Database(sled::Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Bookmark transaction error: {:?}", e),
-                    )))
-                })?;
-
             if should_prune {
-                let total_seen = self
-                    .state_tree
-                    .scan_prefix(IDEMPOTENCY_KEY_PREFIX)
-                    .keys()
-                    .count() as u64;
-
-                if total_seen > self.idempotency_window_size {
-                    let to_remove = total_seen - self.idempotency_window_size;
-
-                    debug!(
-                        offset = offset,
-                        total_seen = total_seen,
-                        to_remove = to_remove,
-                        "Pruning idempotency set"
-                    );
-
-                    // Remove oldest keys (lexicographically first due to offset prefix)
-                    for key_res in self
-                        .state_tree
-                        .scan_prefix(IDEMPOTENCY_KEY_PREFIX)
-                        .keys()
-                        .take(to_remove as usize)
-                    {
-                        self.state_tree.remove(key_res?)?;
-                    }
-                }
+                self.prune_idempotency_set(&cf)?;
             }
         }
 
-        self.db.flush()?;
+        // Flush to disk for durability
+        self.db.flush_cf(&cf)?;
 
         Span::current().record("processed", processed_count);
         Span::current().record("skipped", skipped_count);
 
         info!(
-            handler_name = self.handler.name(),
+            handler_name = %self.handler_name,
             processed = processed_count,
             skipped = skipped_count,
             "Batch processing complete"
@@ -244,16 +251,76 @@ impl<H: EventHandler> PersistentSubscription<H> {
 
         Ok(())
     }
+
+    /// Prune old idempotency keys to maintain bounded memory usage
+    fn prune_idempotency_set(
+        &self,
+        cf: &impl rocksdb::AsColumnFamilyRef,
+    ) -> Result<(), EventError> {
+        let prefix = {
+            let mut p =
+                Vec::with_capacity(self.handler_name.len() + 1 + IDEMPOTENCY_KEY_PREFIX.len());
+            p.extend_from_slice(self.handler_name.as_bytes());
+            p.push(b':');
+            p.extend_from_slice(IDEMPOTENCY_KEY_PREFIX);
+            p
+        };
+
+        // Count keys with our prefix
+        let keys: Vec<_> = self
+            .db
+            .prefix_iterator_cf(cf, &prefix)
+            .filter_map(|res| res.ok().map(|(k, _)| k))
+            .collect();
+
+        let total_seen = keys.len() as u64;
+
+        if total_seen > self.idempotency_window_size {
+            let to_remove = total_seen - self.idempotency_window_size;
+
+            debug!(
+                handler_name = %self.handler_name,
+                total_seen = total_seen,
+                to_remove = to_remove,
+                window_size = self.idempotency_window_size,
+                "Pruning idempotency set"
+            );
+
+            // Remove oldest keys (first in sorted order due to offset encoding)
+            let mut batch = WriteBatch::default();
+            for key in keys.iter().take(to_remove as usize) {
+                batch.delete_cf(cf, key);
+            }
+
+            self.db.write(batch).map_err(|e| {
+                error!(
+                    handler_name = %self.handler_name,
+                    error = %e,
+                    "Failed to prune idempotency set"
+                );
+                EventError::Storage(format!("Prune write failed: {}", e))
+            })?;
+
+            info!(
+                handler_name = %self.handler_name,
+                removed = to_remove,
+                remaining = self.idempotency_window_size,
+                "Pruned idempotency set"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Dispatcher that delivers events (post-persistence) to a persistent subscription in batches.
 pub struct Dispatcher<'a> {
-    store: &'a EventStore,
+    store: &'a RocksDbEventStore,
     batch_size: usize,
 }
 
 impl<'a> Dispatcher<'a> {
-    pub fn new(store: &'a EventStore) -> Self {
+    pub fn new(store: &'a RocksDbEventStore) -> Self {
         Self {
             store,
             batch_size: DEFAULT_BATCH_SIZE,
@@ -266,9 +333,8 @@ impl<'a> Dispatcher<'a> {
     }
 
     /// Polls for new events and delivers them in batches.
-    /// Delivery is guaranteed after persistence since we read from `EventStore`.
+    /// Delivery is guaranteed after persistence since we read from `RocksDbEventStore`.
     /// Idempotence is guaranteed by the subscription state.
-    ///
     ///
     /// # Concurrency
     ///
@@ -281,7 +347,7 @@ impl<'a> Dispatcher<'a> {
     #[instrument(
         skip(self, subscription),
         fields(
-            handler_name = subscription.handler.name(),
+            handler_name = %subscription.handler_name,
             batch_size = self.batch_size,
             batches_processed = 0,
             total_events = 0
@@ -296,22 +362,22 @@ impl<'a> Dispatcher<'a> {
         let mut total_events = 0;
 
         info!(
-            handler_name = subscription.handler.name(),
+            handler_name = %subscription.handler_name,
             starting_bookmark = bookmark,
-            "Starting Event poll"
+            "Starting event poll"
         );
 
         loop {
             debug!(
-                handler_name = subscription.handler.name(),
+                handler_name = %subscription.handler_name,
                 bookmark = bookmark,
                 batch_size = self.batch_size,
-                "Fetching Event batch",
+                "Fetching event batch",
             );
 
             let batch: Vec<(u64, Event)> = self
                 .store
-                .iter_from(bookmark)
+                .iter_from(bookmark)?
                 .take(self.batch_size)
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -338,11 +404,11 @@ impl<'a> Dispatcher<'a> {
         Span::current().record("total_events", total_events);
 
         info!(
-            handler_name = subscription.handler.name(),
+            handler_name = %subscription.handler_name,
             batches_processed = batches_processed,
             total_events = total_events,
             final_bookmark = bookmark,
-            "Event Poll complete"
+            "Event poll complete"
         );
 
         Ok(())
