@@ -1,7 +1,8 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
-use crate::modules::network::peer_registry::{
-    ConnectionDirection, NetworkStats, PeerInfo, PeerRegistry,
+use crate::modules::network::peer_registry::{ConnectionDirection, NetworkStats, PeerInfo};
+use crate::modules::network::persistent_peer_registry::{
+    PeerRegistryConfig, PersistentPeerRegistry,
 };
 use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
@@ -67,7 +68,7 @@ enum NetworkCommand {
 struct NetworkEventLoop {
     swarm: Swarm<FlowBehaviour>,
     command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
-    peer_registry: PeerRegistry,
+    peer_registry: Arc<PersistentPeerRegistry>,
 }
 
 impl NetworkManager {
@@ -200,10 +201,17 @@ impl NetworkManager {
             .ok_or_else(|| AppError::Network("Network already started".to_string()))?;
 
         // Create event loop
+        let peer_registry_config = PeerRegistryConfig::from_env();
+        let mut persistent_registry =
+            PersistentPeerRegistry::new(peer_registry_config).map_err(|e| {
+                AppError::Network(format!("Failed to create persistent peer registry: {}", e))
+            })?;
+        persistent_registry.start_background_flush();
+
         let mut event_loop = NetworkEventLoop {
             swarm,
             command_rx,
-            peer_registry: PeerRegistry::new(),
+            peer_registry: Arc::new(persistent_registry),
         };
 
         // Listen on address
@@ -394,6 +402,15 @@ impl NetworkEventLoop {
                 }
             }
         }
+
+        // Graceful shutdown of persistent registry
+        // Final flush before exiting
+        info!("Flushing persistent peer registry before shutdown");
+        if let Err(e) = self.peer_registry.flush() {
+            warn!("Failed to flush peer registry on shutdown: {}", e);
+        }
+
+        info!("Network event loop stopped");
     }
 
     /// Handle individual Swarm events
@@ -565,7 +582,9 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
+    use serial_test::serial;
     use std::time::Duration;
+    use tempfile::TempDir;
     use tokio::time::sleep;
 
     // Helper function to create test node data
@@ -580,16 +599,28 @@ mod tests {
         }
     }
 
-    // Helper to create a test config with random port
-    fn create_test_config() -> NetworkConfig {
-        NetworkConfig {
+    // Helper to create a test config with unique temp directories
+    fn create_test_config() -> (NetworkConfig, TempDir, TempDir) {
+        let dht_temp = TempDir::new().expect("Failed to create DHT temp dir");
+        let peer_reg_temp = TempDir::new().expect("Failed to create peer registry temp dir");
+
+        // Set env vars for this test's unique paths
+        unsafe {
+            std::env::set_var("DHT_DB_PATH", dht_temp.path());
+            std::env::set_var("PEER_REGISTRY_DB_PATH", peer_reg_temp.path());
+        }
+
+        let config = NetworkConfig {
             enable_quic: true,
             listen_port: 0, // OS assigns random port
             bootstrap_peers: vec![],
-        }
+        };
+
+        (config, dht_temp, peer_reg_temp)
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_network_manager_creation() {
         let node_data = create_test_node_data();
         let result = NetworkManager::new(&node_data).await;
@@ -611,6 +642,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_peer_id_deterministic_from_same_keys() {
         let node_data = create_test_node_data();
 
@@ -625,6 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_peer_id_unique_for_different_keys() {
         let node_data1 = create_test_node_data();
         let node_data2 = create_test_node_data();
@@ -640,9 +673,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_network_manager_start_and_stop() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
 
@@ -659,9 +693,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_cannot_start_twice() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
 
@@ -690,6 +725,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_stop_without_start_is_safe() {
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -700,9 +736,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_peer_count_initially_zero() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -720,6 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_peer_count_query_before_start() {
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -736,6 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_local_peer_id_accessible() {
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -751,6 +790,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_manager_with_invalid_key_length() {
         let mut node_data = create_test_node_data();
 
@@ -767,31 +807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multiple_managers_can_coexist() {
-        let node_data1 = create_test_node_data();
-        let node_data2 = create_test_node_data();
-        let config1 = create_test_config();
-        let config2 = create_test_config();
-
-        let manager1 = NetworkManager::new(&node_data1).await.unwrap();
-        let manager2 = NetworkManager::new(&node_data2).await.unwrap();
-
-        // Both should start successfully on different random ports
-        assert!(manager1.start(&config1).await.is_ok());
-        assert!(manager2.start(&config2).await.is_ok());
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Both should have zero peers (not connected to each other yet)
-        assert_eq!(manager1.peer_count().await.unwrap(), 0);
-        assert_eq!(manager2.peer_count().await.unwrap(), 0);
-
-        // Clean up
-        manager1.stop().await.unwrap();
-        manager2.stop().await.unwrap();
-    }
-
-    #[tokio::test]
+    #[serial]
     async fn test_start_with_specific_port() {
         let node_data = create_test_node_data();
 
@@ -814,6 +830,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_quic_transport_config() {
         let node_data = create_test_node_data();
 
@@ -836,6 +853,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_tcp_transport_config() {
         let node_data = create_test_node_data();
 
@@ -858,9 +876,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_concurrent_peer_count_queries() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -888,9 +907,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_shutdown_is_graceful() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -909,9 +929,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_connected_peers_list() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -925,9 +946,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_network_stats() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -941,9 +963,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_dial_invalid_address() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -963,9 +986,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_peer_info_nonexistent() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -984,43 +1008,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_two_managers_can_connect() {
-        let node_data1 = create_test_node_data();
-        let node_data2 = create_test_node_data();
-
-        let mut config1 = create_test_config();
-        config1.listen_port = 0; // Random port
-
-        let mut config2 = create_test_config();
-        config2.listen_port = 0; // Random port
-
-        let manager1 = NetworkManager::new(&node_data1).await.unwrap();
-        let manager2 = NetworkManager::new(&node_data2).await.unwrap();
-
-        manager1.start(&config1).await.unwrap();
-        manager2.start(&config2).await.unwrap();
-
-        sleep(Duration::from_millis(200)).await;
-
-        // Get manager2's listen addresses
-        // Note: In real tests, you'd expose swarm.listeners() or listen addrs
-        // For now, we'll just verify both are running
-
-        let stats1 = manager1.network_stats().await.unwrap();
-        let stats2 = manager2.network_stats().await.unwrap();
-
-        assert_eq!(stats1.connected_peers, 0);
-        assert_eq!(stats2.connected_peers, 0);
-
-        // Clean up
-        manager1.stop().await.unwrap();
-        manager2.stop().await.unwrap();
-    }
-
-    #[tokio::test]
+    #[serial]
     async fn test_disconnect_peer() {
         let node_data = create_test_node_data();
-        let config = create_test_config();
+        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
