@@ -148,12 +148,27 @@ async fn test_start_registration_challenge_is_unique() {
 async fn test_start_registration_with_multiple_devices() {
     let (db, temp_dir) = setup_test_multi_node().await;
 
-    // Create two nodes with different device IDs
+    // Create two KV stores with RocksDB instead of Sled
+    use node::modules::storage::{KvConfig, KvStore, RocksDbKvStore};
+    use std::sync::Arc;
+
     let kv_path1 = temp_dir.path().join("kv1");
-    let kv1 = sled::open(&kv_path1).unwrap();
+    let kv_config1 = KvConfig {
+        path: kv_path1.clone(),
+        enable_compression: false,
+        max_open_files: 100,
+        write_buffer_size: 1024 * 1024,
+    };
+    let kv1: Arc<dyn KvStore> = Arc::new(RocksDbKvStore::new(&kv_path1, &kv_config1).unwrap());
 
     let kv_path2 = temp_dir.path().join("kv2");
-    let kv2 = sled::open(&kv_path2).unwrap();
+    let kv_config2 = KvConfig {
+        path: kv_path2.clone(),
+        enable_compression: false,
+        max_open_files: 100,
+        write_buffer_size: 1024 * 1024,
+    };
+    let kv2: Arc<dyn KvStore> = Arc::new(RocksDbKvStore::new(&kv_path2, &kv_config2).unwrap());
 
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
         rp_id: "localhost".to_string(),
@@ -178,7 +193,7 @@ async fn test_start_registration_with_multiple_devices() {
     let node1 = Node::new(
         node_data_1,
         db.clone(),
-        kv1,
+        kv1, // Now Arc<dyn KvStore>
         AuthState::new(auth_config.clone()).unwrap(),
         pipeline_manager.clone(),
         network_manager_1,
@@ -196,7 +211,7 @@ async fn test_start_registration_with_multiple_devices() {
     let node2 = Node::new(
         node_data_2,
         db.clone(),
-        kv2,
+        kv2, // Now Arc<dyn KvStore>
         AuthState::new(auth_config).unwrap(),
         pipeline_manager,
         network_manager_2,
@@ -228,7 +243,7 @@ async fn test_end_to_end_registration_and_authentication() {
     Migrator::up(&db, None).await.unwrap();
 
     let kv_path = temp_dir.path().join("kv");
-    let kv = sled::open(&kv_path).unwrap();
+    let kv = crate::bootstrap::init::setup_kv_from_path(&kv_path).unwrap();
 
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
         rp_id: "localhost".to_string(),

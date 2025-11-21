@@ -6,11 +6,11 @@ use crate::modules::network::manager::NetworkManager;
 use crate::modules::network::peer_registry::{NetworkStats, PeerInfo};
 use crate::modules::ssi::webauthn;
 use crate::modules::ssi::webauthn::state::AuthState;
+use crate::modules::storage::KvStore;
 use crate::modules::{ai, space};
 use errors::AppError;
 use libp2p::Multiaddr;
 use sea_orm::DatabaseConnection;
-use sled::Db;
 use tracing::info;
 use webauthn_rs::prelude::CreationChallengeResponse;
 use webauthn_rs::prelude::{
@@ -22,7 +22,7 @@ use webauthn_rs::prelude::{
 pub struct Node {
     pub node_data: NodeData,
     pub db: DatabaseConnection,
-    pub kv: Db,
+    pub kv: Arc<dyn KvStore>,
     pub auth_state: AuthState,
     pub pipeline_manager: PipelineManager,
     pub network_manager: Arc<NetworkManager>,
@@ -32,7 +32,7 @@ impl Node {
     pub fn new(
         node_data: NodeData,
         db: DatabaseConnection,
-        kv: Db,
+        kv: Arc<dyn KvStore>,
         auth_state: AuthState,
         pipeline_manager: PipelineManager,
         network_manager: Arc<NetworkManager>,

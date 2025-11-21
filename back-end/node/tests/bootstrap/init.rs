@@ -7,9 +7,11 @@ use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use node::modules::ai::config::IndexingConfig;
 use node::modules::ai::pipeline_manager::PipelineManager;
 use node::modules::network::manager::NetworkManager;
+use node::modules::storage::{KvConfig, RocksDbKvStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::info;
 
 use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
@@ -44,11 +46,8 @@ pub async fn setup_test_node() -> (Node, TempDir) {
     setup_test_node_with_device_id("test-node--").await
 }
 
-/// Setup a test node with a custom device ID
-pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Setup database
+/// Setup a test database with migrations
+async fn setup_test_database(temp_dir: &TempDir) -> DatabaseConnection {
     let db_path = temp_dir.path().join("test.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
@@ -58,33 +57,96 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
     let db = Database::connect(opt).await.unwrap();
     Migrator::up(&db, None).await.unwrap();
 
-    // Setup KV store
-    let kv_path = temp_dir.path().join("kv");
-    let kv = sled::open(&kv_path).unwrap();
+    db
+}
 
-    // Setup auth state
+/// Setup a test KV store with RocksDB
+fn setup_test_kv_store(temp_dir: &TempDir) -> Result<Arc<RocksDbKvStore>, AppError> {
+    info!("Setting up KV Store with RocksDB");
+
+    let kv_path = temp_dir.path().join("kv");
+
+    let kv_config = KvConfig {
+        path: kv_path.clone().into(),
+        enable_compression: true,
+        max_open_files: 1000,
+        write_buffer_size: 64 * 1024 * 1024, // 64MB
+    };
+
+    let store = RocksDbKvStore::new(&kv_config.path, &kv_config)
+        .map_err(|e| AppError::Storage(format!("Failed to initialize KV store: {}", e).into()))?;
+
+    Ok(Arc::new(store))
+}
+
+/// Setup a test KV store with RocksDB
+pub fn setup_kv_from_path(path: &Path) -> Result<Arc<RocksDbKvStore>, AppError> {
+    info!("Setting up KV Store with RocksDB");
+
+    let kv_path = path.join("kv");
+
+    let kv_config = KvConfig {
+        path: kv_path.clone().into(),
+        enable_compression: true,
+        max_open_files: 1000,
+        write_buffer_size: 64 * 1024 * 1024, // 64MB
+    };
+
+    let store = RocksDbKvStore::new(&kv_config.path, &kv_config)
+        .map_err(|e| AppError::Storage(format!("Failed to initialize KV store: {}", e).into()))?;
+
+    Ok(Arc::new(store))
+}
+
+/// Setup test auth state
+fn setup_test_auth_state() -> AuthState {
     let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
         rp_id: "localhost".to_string(),
         rp_origin: "http://localhost:3000".to_string(),
         rp_name: "Test Flow".to_string(),
     };
-    let auth_state = AuthState::new(auth_config).unwrap();
 
-    // Create node data with custom device_id
-    let node_data = NodeData {
+    AuthState::new(auth_config).unwrap()
+}
+
+/// Create test node data with custom device ID
+fn create_test_node_data(device_id: &str) -> NodeData {
+    NodeData {
         id: device_id.to_string(),
         private_key: vec![0u8; 32],
         public_key: vec![0u8; 32],
-    };
+    }
+}
 
+/// Setup test pipeline manager
+fn setup_test_pipeline_manager(db: DatabaseConnection) -> Result<PipelineManager, AppError> {
     let indexing_config = IndexingConfig::from_env()
-        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
-        .unwrap();
-    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
+        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))?;
 
-    let network_manager = NetworkManager::new(&node_data).await.unwrap();
-    let network_manager = Arc::new(network_manager);
+    Ok(PipelineManager::new(db, indexing_config))
+}
 
+/// Setup test network manager
+async fn setup_test_network_manager(
+    node_data: &NodeData,
+) -> Result<Arc<NetworkManager>, Box<dyn std::error::Error>> {
+    let network_manager = NetworkManager::new(node_data).await?;
+    Ok(Arc::new(network_manager))
+}
+
+/// Setup a test node with a custom device ID
+pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Setup all components
+    let db = setup_test_database(&temp_dir).await;
+    let kv = setup_test_kv_store(&temp_dir).unwrap();
+    let auth_state = setup_test_auth_state();
+    let node_data = create_test_node_data(device_id);
+    let pipeline_manager = setup_test_pipeline_manager(db.clone()).unwrap();
+    let network_manager = setup_test_network_manager(&node_data).await.unwrap();
+
+    // Create and return the node
     let node = Node::new(
         node_data,
         db,
@@ -120,29 +182,14 @@ pub async fn create_test_node_with_db(
     db: DatabaseConnection,
     kv_path: &Path,
 ) -> Node {
-    let kv = sled::open(kv_path).unwrap();
+    // Setup all components using existing helpers
+    let kv = setup_kv_from_path(kv_path).unwrap();
+    let auth_state = setup_test_auth_state();
+    let node_data = create_test_node_data(device_id);
+    let pipeline_manager = setup_test_pipeline_manager(db.clone()).unwrap();
+    let network_manager = setup_test_network_manager(&node_data).await.unwrap();
 
-    let auth_config = node::modules::ssi::webauthn::state::AuthConfig {
-        rp_id: "localhost".to_string(),
-        rp_origin: "http://localhost:3000".to_string(),
-        rp_name: "Test Flow".to_string(),
-    };
-    let auth_state = AuthState::new(auth_config).unwrap();
-
-    let node_data = NodeData {
-        id: device_id.to_string(),
-        private_key: vec![0u8; 32],
-        public_key: vec![0u8; 32],
-    };
-
-    let indexing_config = IndexingConfig::from_env()
-        .map_err(|_| AppError::Internal("Failed to initialize IndexingConfig".to_string()))
-        .unwrap();
-    let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
-
-    let network_manager = NetworkManager::new(&node_data).await.unwrap();
-    let network_manager = Arc::new(network_manager);
-
+    // Create and return the node
     Node::new(
         node_data,
         db,

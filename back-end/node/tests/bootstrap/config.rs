@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use node::bootstrap::config::Config;
 use serial_test::serial;
 
@@ -24,7 +26,7 @@ fn test_config_validation_with_valid_env() -> Result<(), Box<dyn std::error::Err
     assert_eq!(config.db.min_connections, 10);
     assert_eq!(config.server.rest_port, 9090);
     assert_eq!(config.server.websocket_port, 9091);
-    assert_eq!(config.kv.path, "/tmp/test-kv");
+    assert_eq!(config.kv.path, PathBuf::from("/tmp/test-kv"));
 
     Ok(())
 }
@@ -61,7 +63,11 @@ fn test_config_applies_defaults() -> Result<(), Box<dyn std::error::Error>> {
         config.server.websocket_port, 8081,
         "Should use default WebSocket port"
     );
-    assert_eq!(config.kv.path, "/tmp/flow-kv", "Should use default KV path");
+    assert_eq!(
+        config.kv.path,
+        PathBuf::from("/tmp/flow-kv"),
+        "Should use default KV path"
+    );
     assert_eq!(config.server.host, "0.0.0.0", "Should use default host");
 
     Ok(())

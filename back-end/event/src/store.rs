@@ -541,7 +541,7 @@ impl RocksDbEventStore {
 
     /// Returns an iterator over events starting from a given offset.
     #[instrument(skip(self))]
-    pub fn iter_from(&self, start_offset: u64) -> Result<RocksDbEventIterator, EventError> {
+    pub fn iter_from(&self, start_offset: u64) -> Result<RocksDbEventIterator<'_>, EventError> {
         debug!(start_offset = start_offset, "Creating event iterator");
 
         let events_cf = self
