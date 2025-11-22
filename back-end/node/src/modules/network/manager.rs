@@ -25,6 +25,8 @@ pub struct NetworkManager {
     /// Channel for sending commands to the event loop
     command_tx: mpsc::UnboundedSender<NetworkCommand>,
 
+    /// Command receiver - taken once during start() and moved to the event loop.
+    /// Wrapped in Arc<Mutex<Option<>>> to allow one-time transfer to the spawned task.
     command_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<NetworkCommand>>>>,
 
     /// Handle to the background event loop task
@@ -192,7 +194,6 @@ impl NetworkManager {
         let swarm = Self::build_swarm(keypair, self.local_peer_id, config).await?;
 
         // Create NEW command receiver for this event loop
-        // let (_new_tx, command_rx) = mpsc::unbounded_channel::<NetworkCommand>();
         let command_rx = self
             .command_rx
             .lock()
