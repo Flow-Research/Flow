@@ -2,6 +2,8 @@
 
 Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data local or in trusted environments, agents execute with signed events and receipts, state converges via CRDTs even offline, and programmable incentives settle contributions automatically with provenance and privacy by default.
 
+## Concept Diagram
+
 ![Flow concept](https://drive.google.com/uc?export=view&id=1bOsg1DuZVUsQcje5Sk4ENy-OAabfuXW9 "Flow")
 
 ## Core Principles
@@ -28,7 +30,6 @@ Flow is a decentralized automation network that turns goals into verifiable jobs
 9.  [**Execution Layer**](./specs/09_execution_layer.md): Handles the definition and running of workflows as Directed Acyclic Graphs (DAGs), managing signed state transitions.
 10.  [**Compute Layer**](./specs/10_compute_layer.md): Executes the actual computational tasks defined in the Execution Layer, potentially using various backends (local, distributed like Bacalhau) and supporting verifiable computation.
 11. [**Incentive Layer**](./specs/11_incentive_layer.md): Defines and manages programmable rewards and contribution tracking based on provenance data in the knowledge graph.
-12. **Physical Layer**: Provides verifiable access to decentralized physical infrastructure (compute, network, storage, sensors, actuators), using DePIN protocols and trust attestations.
 
 
 ## Flow of Activity
