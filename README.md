@@ -2,6 +2,8 @@
 
 Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data local or in trusted environments, agents execute with signed events and receipts, state converges via CRDTs even offline, and programmable incentives settle contributions automatically with provenance and privacy by default.
 
+![Flow concept](https://drive.google.com/file/d/1bOsg1DuZVUsQcje5Sk4ENy-OAabfuXW9/view?usp=sharing "Flow concept")
+
 
 ## Core Principles
 
