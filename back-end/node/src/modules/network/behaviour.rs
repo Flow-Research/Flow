@@ -1,22 +1,28 @@
 use crate::modules::network::storage::RocksDbStore;
 use libp2p::PeerId;
 use libp2p::kad;
+use libp2p::mdns;
 use libp2p::swarm::NetworkBehaviour;
+use libp2p::swarm::behaviour::toggle::Toggle;
+use tracing::{debug, info, warn};
 
 /// Combined network behaviour for Flow
 ///
 /// Currently includes:
 /// - Kademlia DHT for peer discovery and content routing
+/// - mDNS for local network discovery
 ///
 /// Future extensions will add:
 /// - GossipSub for pub/sub messaging
-/// - mDNS for local network discovery
 /// - Request-Response for direct queries
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "FlowBehaviourEvent")]
 pub struct FlowBehaviour {
     /// Kademlia DHT for distributed peer discovery
     pub kademlia: kad::Behaviour<RocksDbStore>,
+
+    /// mDNS for local network discovery
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
 }
 
 /// Events emitted by the Flow behaviour
@@ -25,11 +31,18 @@ pub struct FlowBehaviour {
 #[derive(Debug)]
 pub enum FlowBehaviourEvent {
     Kademlia(kad::Event),
+    Mdns(mdns::Event),
 }
 
 impl From<kad::Event> for FlowBehaviourEvent {
     fn from(event: kad::Event) -> Self {
         FlowBehaviourEvent::Kademlia(event)
+    }
+}
+
+impl From<mdns::Event> for FlowBehaviourEvent {
+    fn from(event: mdns::Event) -> Self {
+        FlowBehaviourEvent::Mdns(event)
     }
 }
 
@@ -39,17 +52,38 @@ impl FlowBehaviour {
     /// # Arguments
     /// * `local_peer_id` - The PeerId of this node
     /// * `store` - Persistent RocksDB store for DHT records
+    /// * `enable_mdns` - Whether to enable mDNS local discovery
     ///
     /// # Returns
     /// A configured FlowBehaviour ready for use in a Swarm
-    pub fn new(local_peer_id: PeerId, store: RocksDbStore) -> Self {
+    pub fn new(local_peer_id: PeerId, store: RocksDbStore, enable_mdns: bool) -> Self {
         // Create Kademlia configuration
         let kad_config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
 
         // Create Kademlia behaviour with in-memory store
         let kademlia = kad::Behaviour::with_config(local_peer_id, store, kad_config);
 
-        Self { kademlia }
+        // Create mDNS behaviour if enabled
+        let mdns = if enable_mdns {
+            match mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id) {
+                Ok(behaviour) => {
+                    info!("mDNS enabled for local network discovery");
+                    Toggle::from(Some(behaviour))
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to create mDNS behaviour: {}. Continuing without mDNS.",
+                        e
+                    );
+                    Toggle::from(None)
+                }
+            }
+        } else {
+            debug!("mDNS disabled");
+            Toggle::from(None)
+        };
+
+        Self { kademlia, mdns }
     }
 
     /// Add a bootstrap peer to the Kademlia routing table
@@ -101,7 +135,7 @@ mod tests {
     fn test_behaviour_creation() {
         let peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(peer_id);
-        let mut behaviour = FlowBehaviour::new(peer_id, store);
+        let mut behaviour = FlowBehaviour::new(peer_id, store, true);
 
         // Verify Kademlia is initialized with empty routing table
         assert_eq!(
@@ -115,7 +149,7 @@ mod tests {
     fn test_bootstrap_fails_without_known_peers() {
         let peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(peer_id);
-        let mut behaviour = FlowBehaviour::new(peer_id, store);
+        let mut behaviour = FlowBehaviour::new(peer_id, store, false);
 
         // Attempt to bootstrap without any known peers
         let result = behaviour.bootstrap();
@@ -136,7 +170,7 @@ mod tests {
     fn test_bootstrap_succeeds_with_known_peers() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
 
         // Add a bootstrap peer
         let bootstrap_peer = generate_peer_id();
@@ -161,7 +195,7 @@ mod tests {
     fn test_add_single_bootstrap_peer() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
 
         let bootstrap_peer = generate_peer_id();
         let addr: libp2p::Multiaddr = "/ip4/192.168.1.100/tcp/4001".parse().unwrap();
@@ -184,7 +218,7 @@ mod tests {
     fn test_add_multiple_bootstrap_peers() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, true);
 
         // Add multiple bootstrap peers
         let peer1 = generate_peer_id();
@@ -203,7 +237,7 @@ mod tests {
     fn test_add_multiple_addresses_for_same_peer() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
 
         let bootstrap_peer = generate_peer_id();
 
@@ -225,7 +259,7 @@ mod tests {
     fn test_bootstrap_query_id_uniqueness() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
 
         // Add a peer
         let peer = generate_peer_id();
@@ -245,7 +279,7 @@ mod tests {
     fn test_multiaddr_parsing_validation() {
         let local_peer_id = generate_peer_id();
         let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store);
+        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
         let peer = generate_peer_id();
 
         // Test various valid multiaddr formats
@@ -278,6 +312,12 @@ mod tests {
         // This is more of a compile-time test, but it ensures
         // our event handling structure is correct
         let _assert_event_convertible = |event: kad::Event| -> FlowBehaviourEvent { event.into() };
+    }
+
+    #[test]
+    fn test_event_conversion_from_mdns_event() {
+        // Compile-time verification that mdns::Event can be converted
+        let _assert_event_convertible = |event: mdns::Event| -> FlowBehaviourEvent { event.into() };
     }
 
     #[test]

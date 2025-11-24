@@ -16,7 +16,7 @@ use multibase::Base;
 #[derive(Clone)]
 pub struct NodeData {
     pub id: String,
-    pub private_key: Vec<u8>,
+    pub private_key: Vec<u8>, // #TODO we will need to move these to more secure storage and not in-memory
     pub public_key: Vec<u8>,
 }
 

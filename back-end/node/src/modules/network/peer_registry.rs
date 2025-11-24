@@ -3,6 +3,27 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// Discovery source for tracking how peer was found
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscoverySource {
+    /// Discovered via mDNS on local network
+    Mdns,
+    /// Discovered via Kademlia DHT
+    Dht,
+    /// Configured as bootstrap peer
+    Bootstrap,
+    /// Manually dialed by user/API
+    Manual,
+    /// Unknown or not tracked (for backwards compatibility)
+    Unknown,
+}
+
+impl Default for DiscoverySource {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 /// Information about a connected peer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
@@ -36,6 +57,9 @@ pub struct PeerInfo {
 
     /// Whether this is an outbound (dialed) or inbound connection
     pub connection_direction: ConnectionDirection,
+
+    /// How this peer was discovered
+    pub discovery_source: DiscoverySource,
 }
 
 // Helper serializers for libp2p types
@@ -167,6 +191,7 @@ impl PeerRegistry {
         peer_id: PeerId,
         address: Multiaddr,
         direction: ConnectionDirection,
+        discovery_source: DiscoverySource,
     ) {
         let now = Instant::now();
         self.total_connections += 1;
@@ -205,6 +230,7 @@ impl PeerRegistry {
                     connection_count: 1,
                     stats,
                     connection_direction: direction,
+                    discovery_source,
                 }
             });
 
@@ -320,10 +346,17 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
 
         assert_eq!(registry.peer_count(), 1);
+
         let peer_info = registry.get_peer(&peer_id).unwrap();
+
         assert_eq!(peer_info.connection_count, 1);
         assert_eq!(peer_info.addresses.len(), 1);
         assert_eq!(peer_info.addresses[0], addr);
@@ -332,6 +365,7 @@ mod tests {
             ConnectionDirection::Outbound
         );
         assert_eq!(peer_info.stats.reconnection_count, 0);
+        assert_eq!(peer_info.discovery_source, DiscoverySource::Mdns);
     }
 
     #[test]
@@ -340,10 +374,25 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Inbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
+        );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
         assert_eq!(peer_info.connection_direction, ConnectionDirection::Inbound);
+    }
+
+    #[test]
+    fn test_discovery_source_serialization() {
+        let source = DiscoverySource::Mdns;
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(json, r#""Mdns""#);
+
+        let deserialized: DiscoverySource = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, DiscoverySource::Mdns);
     }
 
     #[test]
@@ -353,8 +402,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
 
         assert_eq!(registry.peer_count(), 1);
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -371,8 +430,18 @@ mod tests {
         let addr = create_test_addr();
 
         // Connect twice with same address
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
         assert_eq!(peer_info.connection_count, 2);
@@ -386,6 +455,7 @@ mod tests {
     #[test]
     fn test_multiple_different_peers() {
         let mut registry = PeerRegistry::new();
+
         let peer1 = create_test_peer_id();
         let peer2 = create_test_peer_id();
         let peer3 = create_test_peer_id();
@@ -394,16 +464,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         assert_eq!(registry.peer_count(), 3);
@@ -422,7 +495,12 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
 
         registry.on_connection_closed(&peer_id);
@@ -441,8 +519,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1, ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
 
         // Close one connection - peer should still be connected
@@ -475,6 +563,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         // Close connection multiple times (should saturate at 0)
@@ -494,7 +583,12 @@ mod tests {
         let addr = create_test_addr();
 
         // First connection
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(
             registry
                 .get_peer(&peer_id)
@@ -509,7 +603,12 @@ mod tests {
         assert_eq!(registry.peer_count(), 0);
 
         // Reconnect - should increment reconnection counter
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
         assert_eq!(
             registry
@@ -524,7 +623,12 @@ mod tests {
         registry.on_connection_closed(&peer_id);
 
         // Reconnect again
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(
             registry
                 .get_peer(&peer_id)
@@ -542,8 +646,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
 
         // Disconnect
         registry.on_connection_closed(&peer_id);
@@ -585,16 +699,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peers = registry.connected_peers();
@@ -617,6 +734,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let first_last_seen = registry.get_peer(&peer_id).unwrap().last_seen;
@@ -647,6 +765,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -699,16 +818,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         // Disconnect one
@@ -763,6 +885,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -779,7 +902,12 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         let peer_info = registry.get_peer(&peer_id).unwrap();
 
         // Serialize to JSON
@@ -804,7 +932,8 @@ mod tests {
                     "reconnection_count": 0,
                     "avg_latency_ms": null
                 }},
-                "connection_direction": "Outbound"
+                "connection_direction": "Outbound",
+                "discovery_source": "Unknown"
             }}"#,
             peer_id_str
         );
@@ -827,6 +956,7 @@ mod tests {
             create_test_peer_id(),
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let stats = registry.stats();
@@ -877,7 +1007,12 @@ mod tests {
         for i in 0..num_peers {
             let peer_id = create_test_peer_id();
             let addr = create_test_addr_with_port(4000 + i);
-            registry.on_connection_established(peer_id, addr, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                addr,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Manual,
+            );
             peer_ids.push(peer_id);
         }
 

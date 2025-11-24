@@ -11,7 +11,7 @@ Flow's user interface consists of two applications:
 
 ### Shared Characteristics
 - **Local-first architecture** - Offline-capable, syncs when connected
-- **Backend integration** - Connects to Flow Rust backend via REST/WebSocket
+- **Backend integration** - Connects to Flow Rust backend via REST/WebSocket or any available transport
 - **Cross-platform** - Web, macOS, Windows, Linux (flow-web); iOS, Android (flow-app)
 
 ## Workspace-Wide Standards
