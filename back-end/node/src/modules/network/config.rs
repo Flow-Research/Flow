@@ -1,7 +1,7 @@
 use libp2p::Multiaddr;
 use std::env;
 
-const P2P_SERVICE_NAME: &str = "_flow-p2p._udp.local";
+const P2P_DEFAULT_SERVICE_NAME: &str = "_flow-p2p._udp.local";
 
 /// mDNS discovery configuration
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ impl Default for MdnsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            service_name: P2P_SERVICE_NAME.to_string(),
+            service_name: P2P_DEFAULT_SERVICE_NAME.to_string(),
             query_interval_secs: 30,
         }
     }
@@ -92,7 +92,7 @@ impl NetworkConfig {
 
         let mdns_service_name = env::var("NETWORK_MDNS_SERVICE_NAME")
             .ok()
-            .unwrap_or_else(|| P2P_SERVICE_NAME.to_string());
+            .unwrap_or_else(|| P2P_DEFAULT_SERVICE_NAME.to_string());
 
         let mdns_query_interval = env::var("NETWORK_MDNS_QUERY_INTERVAL")
             .ok()

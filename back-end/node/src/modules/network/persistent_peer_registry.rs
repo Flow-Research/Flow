@@ -83,37 +83,26 @@ impl PersistentPeerRegistry {
         // Create in-memory registry
         let mut registry = PeerRegistry::new();
 
-        // Load persisted data
+        // Load persisted known peers
         match store.load_known_peers() {
             Ok(known_peers) => {
                 info!("Loaded {} known peers from disk", known_peers.len());
-                // Inject known peers into the registry
-                // Note: We'll need to add a method to PeerRegistry to bulk-load this data
-                for (peer_id, addresses) in known_peers {
-                    for addr in addresses {
-                        // Use a dummy connection/disconnection to populate known_peers
-                        // without making the peer "active"
-                        registry.on_connection_established(
-                            peer_id,
-                            addr.clone(),
-                            ConnectionDirection::Outbound,
-                            DiscoverySource::Unknown,
-                        );
-                        registry.on_connection_closed(&peer_id);
-                    }
-                }
+                registry.bulk_load_known_peers(known_peers);
             }
-            Err(e) => warn!("Failed to load known peers: {}", e),
+            Err(e) => {
+                warn!("Failed to load known peers: {}", e);
+            }
         }
 
         // Load reconnection counts
         match store.load_reconnection_counts() {
             Ok(counts) => {
                 info!("Loaded {} reconnection counts from disk", counts.len());
-                // We'll need to add a method to inject this data
-                // For now, log it (will implement bulk_load method next)
+                registry.bulk_load_reconnection_counts(counts);
             }
-            Err(e) => warn!("Failed to load reconnection counts: {}", e),
+            Err(e) => {
+                warn!("Failed to load reconnection counts: {}", e);
+            }
         }
 
         let inner = Arc::new(RwLock::new(registry));
