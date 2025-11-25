@@ -1,6 +1,7 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
 use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
+use crate::modules::network::gossipsub::{GossipSubConfig, Message, Topic};
 use crate::modules::network::peer_registry::{
     ConnectionDirection, DiscoverySource, NetworkStats, PeerInfo,
 };
@@ -10,6 +11,7 @@ use crate::modules::network::persistent_peer_registry::{
 use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
 use errors::AppError;
+use libp2p::gossipsub::{self, IdentTopic};
 use libp2p::kad::QueryResult;
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId, Swarm, futures::StreamExt, identity::Keypair, noise, tcp, yamux};
@@ -93,6 +95,34 @@ enum NetworkCommand {
 
     /// Get list of bootstrap peer IDs
     GetBootstrapPeerIds(oneshot::Sender<Vec<PeerId>>),
+
+    /// Subscribe to a topic
+    Subscribe {
+        topic: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+
+    /// Unsubscribe from a topic
+    Unsubscribe {
+        topic: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+
+    /// Publish a message
+    Publish {
+        topic: String,
+        message: Message,
+        response: oneshot::Sender<Result<String, String>>,
+    },
+
+    /// Get subscribed topics
+    GetSubscriptions(oneshot::Sender<Vec<String>>),
+
+    /// Get mesh peers for a topic
+    GetMeshPeers {
+        topic: String,
+        response: oneshot::Sender<Vec<PeerId>>,
+    },
 }
 
 /// Connection capacity status
@@ -153,6 +183,12 @@ struct NetworkEventLoop {
 
     /// Whether initial bootstrap has been triggered
     bootstrap_initiated: bool,
+
+    /// Channel for broadcasting incoming messages
+    message_tx: mpsc::UnboundedSender<Message>,
+
+    /// GossipSub configuration for message validation
+    gossipsub_config: GossipSubConfig,
 }
 
 impl NetworkManager {
@@ -208,7 +244,13 @@ impl NetworkManager {
         )?;
 
         // Create the behaviour
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, config.mdns.enabled);
+        let mut behaviour = FlowBehaviour::new(
+            local_peer_id,
+            &keypair,
+            store,
+            config.mdns.enabled,
+            Some(&config.gossipsub),
+        );
 
         // Add bootstrap peers to Kademlia
         for addr in &config.bootstrap_peers {
@@ -339,6 +381,9 @@ impl NetworkManager {
             );
         }
 
+        // Create message channel for GossipSub incoming messages
+        let (message_tx, _message_rx) = mpsc::unbounded_channel();
+
         Ok(NetworkEventLoop {
             swarm,
             command_rx,
@@ -351,6 +396,8 @@ impl NetworkManager {
             bootstrap_peer_ids,
             bootstrap_config: config.bootstrap.clone(),
             bootstrap_initiated: false,
+            message_tx,
+            gossipsub_config: config.gossipsub.clone(),
         })
     }
 
@@ -586,6 +633,118 @@ impl NetworkManager {
         response_rx
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Subscribe to a topic
+    pub async fn subscribe(&self, topic: impl Into<String>) -> Result<(), AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NetworkCommand::Subscribe {
+                topic: topic.into(),
+                response: response_tx,
+            })
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
+            .map_err(|e| AppError::Network(e))
+    }
+
+    /// Subscribe to a Topic
+    pub async fn subscribe_topic(&self, topic: &Topic) -> Result<(), AppError> {
+        self.subscribe(topic.to_topic_string()).await
+    }
+
+    /// Unsubscribe from a topic
+    pub async fn unsubscribe(&self, topic: impl Into<String>) -> Result<(), AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NetworkCommand::Unsubscribe {
+                topic: topic.into(),
+                response: response_tx,
+            })
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
+            .map_err(|e| AppError::Network(e))
+    }
+
+    /// Publish a message to a topic
+    pub async fn publish(&self, message: Message) -> Result<String, AppError> {
+        self.ensure_started().await?;
+
+        let topic = message.topic.clone();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::Publish {
+                topic,
+                message,
+                response: response_tx,
+            })
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
+            .map_err(|e| AppError::Network(e))
+    }
+
+    /// Publish a payload to a Topic
+    pub async fn publish_to_topic(
+        &self,
+        topic: &Topic,
+        payload: crate::modules::network::gossipsub::MessagePayload,
+    ) -> Result<String, AppError> {
+        let message = Message::new(self.local_peer_id, topic.to_topic_string(), payload);
+        self.publish(message).await
+    }
+
+    /// Get list of subscribed topics
+    pub async fn subscribed_topics(&self) -> Result<Vec<String>, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NetworkCommand::GetSubscriptions(response_tx))
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Get mesh peers for a topic
+    pub async fn mesh_peers(&self, topic: impl Into<String>) -> Result<Vec<PeerId>, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NetworkCommand::GetMeshPeers {
+                topic: topic.into(),
+                response: response_tx,
+            })
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Get a receiver for incoming messages
+    ///
+    /// Note: Call this before start() to receive messages from the beginning
+    pub fn message_receiver(&self) -> mpsc::UnboundedReceiver<Message> {
+        // This would need to be set up during construction
+        // For now, this is a placeholder
+        todo!("Implement message receiver channel setup")
     }
 }
 
@@ -1004,6 +1163,10 @@ impl NetworkEventLoop {
                 self.handle_mdns_event(mdns_event).await;
             }
 
+            SwarmEvent::Behaviour(FlowBehaviourEvent::Gossipsub(event)) => {
+                self.handle_gossipsub_event(event).await;
+            }
+
             event => {
                 debug!("Unhandled swarm event: {:?}", event);
             }
@@ -1091,6 +1254,76 @@ impl NetworkEventLoop {
             NetworkCommand::GetBootstrapPeerIds(response) => {
                 let peer_ids: Vec<PeerId> = self.bootstrap_peer_ids.iter().copied().collect();
                 let _ = response.send(peer_ids);
+            }
+
+            NetworkCommand::Subscribe { topic, response } => {
+                let ident_topic = IdentTopic::new(&topic);
+                let result = match self.swarm.behaviour_mut().subscribe(&ident_topic) {
+                    Ok(true) => {
+                        info!(topic = %topic, "Subscribed to topic");
+                        Ok(())
+                    }
+                    Ok(false) => Err("GossipSub is disabled".to_string()),
+                    Err(e) => Err(format!("Subscription failed: {:?}", e)),
+                };
+                let _ = response.send(result);
+            }
+
+            NetworkCommand::Unsubscribe { topic, response } => {
+                let ident_topic = IdentTopic::new(&topic);
+                let unsubscribed = self.swarm.behaviour_mut().unsubscribe(&ident_topic);
+                if unsubscribed {
+                    info!(topic = %topic, "Unsubscribed from topic");
+                } else {
+                    debug!(topic = %topic, "Was not subscribed to topic");
+                }
+                let _ = response.send(Ok(()));
+            }
+
+            NetworkCommand::Publish {
+                topic,
+                message,
+                response,
+            } => {
+                let ident_topic = IdentTopic::new(&topic);
+
+                match message.serialize() {
+                    Ok(data) => match self.swarm.behaviour_mut().publish(ident_topic, data) {
+                        Ok(msg_id) => {
+                            info!(
+                                topic = %topic,
+                                message_id = %msg_id,
+                                flow_message_id = %message.id,
+                                "Message published"
+                            );
+                            let _ = response.send(Ok(msg_id.to_string()));
+                        }
+                        Err(e) => {
+                            warn!(topic = %topic, error = ?e, "Publish failed");
+                            let _ = response.send(Err(format!("Publish failed: {:?}", e)));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = response.send(Err(format!("Serialization failed: {}", e)));
+                    }
+                }
+            }
+
+            NetworkCommand::GetSubscriptions(response_tx) => {
+                let topics: Vec<String> = self
+                    .swarm
+                    .behaviour()
+                    .subscribed_topics()
+                    .iter()
+                    .map(|h| h.to_string())
+                    .collect();
+                let _ = response_tx.send(topics);
+            }
+
+            NetworkCommand::GetMeshPeers { topic, response } => {
+                let ident_topic = IdentTopic::new(&topic);
+                let peers = self.swarm.behaviour().mesh_peers(&ident_topic.hash());
+                let _ = response.send(peers);
             }
         }
 
@@ -1195,6 +1428,79 @@ impl NetworkEventLoop {
         }
     }
 
+    /// Handle GossipSub events
+    async fn handle_gossipsub_event(&mut self, event: gossipsub::Event) {
+        match event {
+            gossipsub::Event::Message {
+                propagation_source,
+                message_id,
+                message,
+            } => {
+                debug!(
+                    source = %propagation_source,
+                    message_id = %message_id,
+                    topic = %message.topic,
+                    "Received GossipSub message"
+                );
+
+                // Deserialize and validate
+                match Message::deserialize(&message.data) {
+                    Ok(flow_msg) => {
+                        // Validate message
+                        if let Err(e) = flow_msg.validate(self.gossipsub_config.max_transmit_size) {
+                            warn!(
+                                message_id = %message_id,
+                                error = %e,
+                                "Message validation failed"
+                            );
+                            return;
+                        }
+
+                        // Check expiry
+                        if flow_msg.is_expired() {
+                            debug!(message_id = %message_id, "Dropping expired message");
+                            return;
+                        }
+
+                        info!(
+                            message_id = %flow_msg.id,
+                            topic = %flow_msg.topic,
+                            source = %flow_msg.source,
+                            payload_type = ?std::mem::discriminant(&flow_msg.payload),
+                            "Valid message received"
+                        );
+
+                        // Broadcast to subscribers
+                        if self.message_tx.send(flow_msg).is_err() {
+                            debug!("No message receivers");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            message_id = %message_id,
+                            error = %e,
+                            "Failed to deserialize message"
+                        );
+                    }
+                }
+            }
+
+            gossipsub::Event::Subscribed { peer_id, topic } => {
+                info!(peer_id = %peer_id, topic = %topic, "Peer subscribed to topic");
+            }
+
+            gossipsub::Event::Unsubscribed { peer_id, topic } => {
+                info!(peer_id = %peer_id, topic = %topic, "Peer unsubscribed from topic");
+            }
+
+            gossipsub::Event::GossipsubNotSupported { peer_id } => {
+                debug!(peer_id = %peer_id, "Peer does not support GossipSub");
+            }
+
+            _ => {}
+        }
+    }
+
     /// Determine if we should dial a discovered peer
     ///
     /// This prevents:
@@ -1276,6 +1582,7 @@ mod tests {
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
+            gossipsub: GossipSubConfig::default(),
         };
 
         (config, dht_temp, peer_reg_temp)
@@ -1481,6 +1788,7 @@ mod tests {
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
+            gossipsub: GossipSubConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1506,6 +1814,7 @@ mod tests {
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
+            gossipsub: GossipSubConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1532,6 +1841,7 @@ mod tests {
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
+            gossipsub: GossipSubConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();

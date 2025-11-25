@@ -3,6 +3,8 @@ use std::env;
 use std::str::FromStr;
 use tracing::error;
 
+use crate::modules::network::gossipsub::GossipSubConfig;
+
 const DEFAULT_P2P_SERVICE_NAME: &str = "_flow-p2p._udp.local";
 const DEFAULT_MAX_CONNECTIONS: usize = 100;
 const DEFAULT_CONNECTION_LIMITS_POLICY: ConnectionLimitPolicy =
@@ -183,6 +185,9 @@ pub struct NetworkConfig {
 
     /// Bootstrap behaviour configuration
     pub bootstrap: BootstrapConfig,
+
+    /// GossipSub configuration
+    pub gossipsub: GossipSubConfig,
 }
 
 impl Default for NetworkConfig {
@@ -194,6 +199,7 @@ impl Default for NetworkConfig {
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
+            gossipsub: GossipSubConfig::default(),
         }
     }
 }
@@ -317,6 +323,7 @@ impl NetworkConfig {
                 max_retries: bootstrap_max_retries,
                 retry_delay_base_ms: bootstrap_retry_delay_ms,
             },
+            gossipsub: GossipSubConfig::from_env(),
         }
     }
 }

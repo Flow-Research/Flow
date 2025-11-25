@@ -1,5 +1,8 @@
+use crate::modules::network::gossipsub::GossipSubConfig;
 use crate::modules::network::storage::RocksDbStore;
 use libp2p::PeerId;
+use libp2p::gossipsub;
+use libp2p::identity::Keypair;
 use libp2p::kad;
 use libp2p::mdns;
 use libp2p::swarm::NetworkBehaviour;
@@ -23,6 +26,9 @@ pub struct FlowBehaviour {
 
     /// mDNS for local network discovery
     pub mdns: Toggle<mdns::tokio::Behaviour>,
+
+    /// GossipSub for pub/sub messaging
+    pub gossipsub: Toggle<gossipsub::Behaviour>,
 }
 
 /// Events emitted by the Flow behaviour
@@ -32,6 +38,7 @@ pub struct FlowBehaviour {
 pub enum FlowBehaviourEvent {
     Kademlia(kad::Event),
     Mdns(mdns::Event),
+    Gossipsub(gossipsub::Event),
 }
 
 impl From<kad::Event> for FlowBehaviourEvent {
@@ -46,44 +53,95 @@ impl From<mdns::Event> for FlowBehaviourEvent {
     }
 }
 
+impl From<gossipsub::Event> for FlowBehaviourEvent {
+    fn from(event: gossipsub::Event) -> Self {
+        FlowBehaviourEvent::Gossipsub(event)
+    }
+}
+
 impl FlowBehaviour {
-    /// Create a new FlowBehaviour with Kademlia DHT
+    /// Create a new FlowBehaviour with all protocols
     ///
     /// # Arguments
     /// * `local_peer_id` - The PeerId of this node
+    /// * `keypair` - The node's keypair (needed for GossipSub signing)
     /// * `store` - Persistent RocksDB store for DHT records
     /// * `enable_mdns` - Whether to enable mDNS local discovery
-    ///
-    /// # Returns
-    /// A configured FlowBehaviour ready for use in a Swarm
-    pub fn new(local_peer_id: PeerId, store: RocksDbStore, enable_mdns: bool) -> Self {
-        // Create Kademlia configuration
-        let kad_config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
+    /// * `gossipsub_config` - GossipSub configuration (None to disable)
+    pub fn new(
+        local_peer_id: PeerId,
+        keypair: &Keypair,
+        store: RocksDbStore,
+        enable_mdns: bool,
+        gossipsub_config: Option<&GossipSubConfig>,
+    ) -> Self {
+        Self {
+            kademlia: Self::create_kademlia(local_peer_id, store),
+            mdns: Self::create_mdns(local_peer_id, enable_mdns),
+            gossipsub: Self::create_gossipsub(keypair, gossipsub_config),
+        }
+    }
 
-        // Create Kademlia behaviour with in-memory store
-        let kademlia = kad::Behaviour::with_config(local_peer_id, store, kad_config);
+    /// Create Kademlia DHT behaviour
+    fn create_kademlia(local_peer_id: PeerId, store: RocksDbStore) -> kad::Behaviour<RocksDbStore> {
+        let config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
+        kad::Behaviour::with_config(local_peer_id, store, config)
+    }
 
-        // Create mDNS behaviour if enabled
-        let mdns = if enable_mdns {
-            match mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id) {
-                Ok(behaviour) => {
-                    info!("mDNS enabled for local network discovery");
-                    Toggle::from(Some(behaviour))
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to create mDNS behaviour: {}. Continuing without mDNS.",
-                        e
-                    );
-                    Toggle::from(None)
-                }
-            }
-        } else {
+    /// Create mDNS behaviour if enabled
+    fn create_mdns(local_peer_id: PeerId, enabled: bool) -> Toggle<mdns::tokio::Behaviour> {
+        if !enabled {
             debug!("mDNS disabled");
-            Toggle::from(None)
+            return Toggle::from(None);
+        }
+
+        match mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id) {
+            Ok(behaviour) => {
+                info!("mDNS enabled for local network discovery");
+                Toggle::from(Some(behaviour))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create mDNS behaviour: {}. Continuing without mDNS.",
+                    e
+                );
+                Toggle::from(None)
+            }
+        }
+    }
+
+    /// Create GossipSub behaviour if configured
+    fn create_gossipsub(
+        keypair: &Keypair,
+        config: Option<&GossipSubConfig>,
+    ) -> Toggle<gossipsub::Behaviour> {
+        let Some(config) = config else {
+            debug!("GossipSub disabled (no config)");
+            return Toggle::from(None);
         };
 
-        Self { kademlia, mdns }
+        if !config.enabled {
+            debug!("GossipSub disabled");
+            return Toggle::from(None);
+        }
+
+        match config.build_behaviour(keypair) {
+            Ok(behaviour) => {
+                info!(
+                    mesh_n = config.mesh_n,
+                    validate_signatures = config.validate_signatures,
+                    "GossipSub enabled"
+                );
+                Toggle::from(Some(behaviour))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create GossipSub behaviour: {:?}. Continuing without GossipSub.",
+                    e
+                );
+                Toggle::from(None)
+            }
+        }
     }
 
     /// Add a bootstrap peer to the Kademlia routing table
@@ -100,6 +158,83 @@ impl FlowBehaviour {
     pub fn bootstrap(&mut self) -> Result<kad::QueryId, kad::NoKnownPeers> {
         self.kademlia.bootstrap()
     }
+
+    /// Subscribe to a GossipSub topic
+    ///
+    /// Returns true if subscription succeeded, false if GossipSub is disabled
+    pub fn subscribe(
+        &mut self,
+        topic: &gossipsub::IdentTopic,
+    ) -> Result<bool, gossipsub::SubscriptionError> {
+        if let Some(gs) = self.gossipsub.as_mut() {
+            gs.subscribe(topic)?;
+            info!(topic = %topic, "Subscribed to topic");
+            Ok(true)
+        } else {
+            warn!("Cannot subscribe: GossipSub is disabled");
+            Ok(false)
+        }
+    }
+
+    /// Unsubscribe from a GossipSub topic
+    pub fn unsubscribe(&mut self, topic: &gossipsub::IdentTopic) -> bool {
+        if let Some(gs) = self.gossipsub.as_mut() {
+            let success = gs.unsubscribe(topic);
+            if success {
+                info!(topic = %topic, "Unsubscribed from topic");
+            } else {
+                debug!(topic = %topic, "Was not subscribed to topic");
+            }
+            success
+        } else {
+            false
+        }
+    }
+
+    /// Publish a message to a GossipSub topic
+    pub fn publish(
+        &mut self,
+        topic: gossipsub::IdentTopic,
+        data: Vec<u8>,
+    ) -> Result<gossipsub::MessageId, gossipsub::PublishError> {
+        if let Some(gs) = self.gossipsub.as_mut() {
+            let msg_id = gs.publish(topic.clone(), data)?;
+            debug!(topic = %topic, message_id = %msg_id, "Published message");
+            Ok(msg_id)
+        } else {
+            Err(gossipsub::PublishError::NoPeersSubscribedToTopic)
+        }
+    }
+
+    /// Get list of peers subscribed to a topic
+    pub fn mesh_peers(&self, topic: &gossipsub::TopicHash) -> Vec<PeerId> {
+        if let Some(gs) = self.gossipsub.as_ref() {
+            gs.mesh_peers(topic).cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get all subscribed topics
+    pub fn subscribed_topics(&self) -> Vec<gossipsub::TopicHash> {
+        if let Some(gs) = self.gossipsub.as_ref() {
+            gs.topics().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Add peer to GossipSub mesh
+    pub fn add_explicit_peer(&mut self, peer_id: &PeerId) {
+        if let Some(gs) = self.gossipsub.as_mut() {
+            gs.add_explicit_peer(peer_id);
+        }
+    }
+
+    /// Check if GossipSub is enabled
+    pub fn is_gossipsub_enabled(&self) -> bool {
+        self.gossipsub.is_enabled()
+    }
 }
 
 #[cfg(test)]
@@ -110,8 +245,12 @@ mod tests {
     use libp2p::identity::Keypair;
     use tempfile::TempDir;
 
+    fn generate_keypair() -> Keypair {
+        Keypair::generate_ed25519()
+    }
+
     fn generate_peer_id() -> PeerId {
-        Keypair::generate_ed25519().public().to_peer_id()
+        generate_keypair().public().to_peer_id()
     }
 
     // Helper function to create a temporary RocksDB store for testing
@@ -133,9 +272,12 @@ mod tests {
 
     #[test]
     fn test_behaviour_creation() {
-        let peer_id = generate_peer_id();
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
-        let mut behaviour = FlowBehaviour::new(peer_id, store, true);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         // Verify Kademlia is initialized with empty routing table
         assert_eq!(
@@ -147,9 +289,12 @@ mod tests {
 
     #[test]
     fn test_bootstrap_fails_without_known_peers() {
-        let peer_id = generate_peer_id();
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
-        let mut behaviour = FlowBehaviour::new(peer_id, store, false);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         // Attempt to bootstrap without any known peers
         let result = behaviour.bootstrap();
@@ -168,9 +313,12 @@ mod tests {
 
     #[test]
     fn test_bootstrap_succeeds_with_known_peers() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         // Add a bootstrap peer
         let bootstrap_peer = generate_peer_id();
@@ -193,9 +341,12 @@ mod tests {
 
     #[test]
     fn test_add_single_bootstrap_peer() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         let bootstrap_peer = generate_peer_id();
         let addr: libp2p::Multiaddr = "/ip4/192.168.1.100/tcp/4001".parse().unwrap();
@@ -216,9 +367,12 @@ mod tests {
 
     #[test]
     fn test_add_multiple_bootstrap_peers() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, true);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         // Add multiple bootstrap peers
         let peer1 = generate_peer_id();
@@ -235,9 +389,12 @@ mod tests {
 
     #[test]
     fn test_add_multiple_addresses_for_same_peer() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         let bootstrap_peer = generate_peer_id();
 
@@ -257,9 +414,12 @@ mod tests {
 
     #[test]
     fn test_bootstrap_query_id_uniqueness() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
 
         // Add a peer
         let peer = generate_peer_id();
@@ -276,10 +436,54 @@ mod tests {
     }
 
     #[test]
+    fn test_behaviour_with_gossipsub() {
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let (store, _temp_dir) = create_test_store(peer_id);
+        let gs_config = GossipSubConfig::default();
+
+        let behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
+
+        assert!(behaviour.is_gossipsub_enabled());
+    }
+
+    #[test]
+    fn test_behaviour_without_gossipsub() {
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, None);
+
+        assert!(!behaviour.is_gossipsub_enabled());
+    }
+
+    #[test]
+    fn test_topic_subscription() {
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let (store, _temp_dir) = create_test_store(peer_id);
+        let gs_config = GossipSubConfig::default();
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
+
+        let topic = gossipsub::IdentTopic::new("/flow/v1/test");
+        let result = behaviour.subscribe(&topic);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        let topics = behaviour.subscribed_topics();
+        assert!(topics.contains(&topic.hash()));
+    }
+
+    #[test]
     fn test_multiaddr_parsing_validation() {
-        let local_peer_id = generate_peer_id();
-        let (store, _temp_dir) = create_test_store(local_peer_id);
-        let mut behaviour = FlowBehaviour::new(local_peer_id, store, false);
+        let keypair = generate_keypair();
+        let peer_id = keypair.public().to_peer_id();
+        let gs_config = GossipSubConfig::default();
+        let (store, _temp_dir) = create_test_store(peer_id);
+
+        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, false, Some(&gs_config));
         let peer = generate_peer_id();
 
         // Test various valid multiaddr formats

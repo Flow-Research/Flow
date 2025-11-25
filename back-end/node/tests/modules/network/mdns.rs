@@ -4,6 +4,7 @@ use node::bootstrap::init::NodeData;
 use node::modules::network::config::{
     BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
 };
+use node::modules::network::gossipsub::GossipSubConfig;
 use node::modules::network::manager::NetworkManager;
 use serial_test::serial;
 use std::time::Duration;
@@ -23,6 +24,7 @@ pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfi
         },
         connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig::default(),
+        gossipsub: GossipSubConfig::default(),
     }
 }
 
