@@ -8,6 +8,9 @@ const DEFAULT_MAX_CONNECTIONS: usize = 100;
 const DEFAULT_CONNECTION_LIMITS_POLICY: ConnectionLimitPolicy =
     ConnectionLimitPolicy::PreferOutbound;
 const DEFAULT_RESERVED_OUTBOUND_CONNECTIONS: usize = 20;
+const DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS: u64 = 100;
+const DEFAULT_BOOTSTRAP_MAX_RETRIES: u32 = 3;
+const DEFAULT_BOOTSTRAP_RETRY_DELAY_MS: u64 = 1000;
 
 /// mDNS discovery configuration
 #[derive(Debug, Clone)]
@@ -128,6 +131,37 @@ impl ConnectionLimits {
     }
 }
 
+/// Bootstrap configuration for network initialization
+#[derive(Debug, Clone)]
+pub struct BootstrapConfig {
+    /// Whether to automatically dial bootstrap peers on startup
+    pub auto_dial: bool,
+
+    /// Whether to run Kademlia bootstrap query on startup
+    pub auto_bootstrap: bool,
+
+    /// Delay before starting bootstrap (allows listener to be ready)
+    pub startup_delay_ms: u64,
+
+    /// Maximum retry attempts for each bootstrap peer
+    pub max_retries: u32,
+
+    /// Base retry delay in milliseconds (exponential backoff)
+    pub retry_delay_base_ms: u64,
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self {
+            auto_dial: true,
+            auto_bootstrap: true,
+            startup_delay_ms: DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS,
+            max_retries: DEFAULT_BOOTSTRAP_MAX_RETRIES,
+            retry_delay_base_ms: DEFAULT_BOOTSTRAP_RETRY_DELAY_MS,
+        }
+    }
+}
+
 /// Configuration for the networking layer
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
@@ -146,6 +180,9 @@ pub struct NetworkConfig {
 
     /// Connection limits
     pub connection_limits: ConnectionLimits,
+
+    /// Bootstrap behaviour configuration
+    pub bootstrap: BootstrapConfig,
 }
 
 impl Default for NetworkConfig {
@@ -156,6 +193,7 @@ impl Default for NetworkConfig {
             bootstrap_peers: Vec::new(),
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
+            bootstrap: BootstrapConfig::default(),
         }
     }
 }
@@ -172,6 +210,11 @@ impl NetworkConfig {
     /// - NETWORK_MDNS_QUERY_INTERVAL: Query interval in seconds (default: 30)
     /// - NETWORK_MAX_CONNECTIONS: Maximum number of connections
     /// - NETWORK_RESERVED_OUTBOUND: Reserved outbound connections
+    /// - NETWORK_BOOTSTRAP_AUTO_DIAL: Auto-dial bootstrap peers (default: true)
+    /// - NETWORK_BOOTSTRAP_AUTO_QUERY: Auto-run bootstrap query (default: true)
+    /// - NETWORK_BOOTSTRAP_DELAY_MS: Startup delay before bootstrap (default: 100)
+    /// - NETWORK_BOOTSTRAP_MAX_RETRIES: Max retry attempts (default: 3)
+    /// - NETWORK_BOOTSTRAP_RETRY_DELAY_MS: Base retry delay (default: 1000)
     pub fn from_env() -> Self {
         let listen_port = env::var("NETWORK_PORT")
             .ok()
@@ -228,6 +271,31 @@ impl NetworkConfig {
             })
             .unwrap_or(DEFAULT_CONNECTION_LIMITS_POLICY);
 
+        let bootstrap_auto_dial = env::var("NETWORK_BOOTSTRAP_AUTO_DIAL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(true);
+
+        let bootstrap_auto_query = env::var("NETWORK_BOOTSTRAP_AUTO_QUERY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(true);
+
+        let bootstrap_delay_ms = env::var("NETWORK_BOOTSTRAP_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS);
+
+        let bootstrap_max_retries = env::var("NETWORK_BOOTSTRAP_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_BOOTSTRAP_MAX_RETRIES);
+
+        let bootstrap_retry_delay_ms = env::var("NETWORK_BOOTSTRAP_RETRY_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_BOOTSTRAP_RETRY_DELAY_MS);
+
         Self {
             enable_quic,
             listen_port,
@@ -241,6 +309,13 @@ impl NetworkConfig {
                 max_connections,
                 policy: connection_limits_policy,
                 reserved_outbound,
+            },
+            bootstrap: BootstrapConfig {
+                auto_dial: bootstrap_auto_dial,
+                auto_bootstrap: bootstrap_auto_query,
+                startup_delay_ms: bootstrap_delay_ms,
+                max_retries: bootstrap_max_retries,
+                retry_delay_base_ms: bootstrap_retry_delay_ms,
             },
         }
     }

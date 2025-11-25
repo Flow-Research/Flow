@@ -393,6 +393,16 @@ impl PeerRegistry {
             total_connection_failures: self.total_failures,
         }
     }
+
+    /// Check if a peer is currently connected
+    pub fn is_connected(&self, peer_id: &PeerId) -> bool {
+        self.peers.contains_key(peer_id)
+    }
+
+    /// Get reconnection count for a peer
+    pub fn get_reconnection_count(&self, peer_id: &PeerId) -> u32 {
+        self.reconnection_counts.get(peer_id).copied().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

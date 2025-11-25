@@ -1,6 +1,6 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
-use crate::modules::network::config::{ConnectionLimitPolicy, ConnectionLimits};
+use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
 use crate::modules::network::peer_registry::{
     ConnectionDirection, DiscoverySource, NetworkStats, PeerInfo,
 };
@@ -11,6 +11,7 @@ use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
 use errors::AppError;
 use libp2p::kad::QueryResult;
+use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId, Swarm, futures::StreamExt, identity::Keypair, noise, tcp, yamux};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -18,6 +19,17 @@ use std::time::{Duration, Instant as StdInstant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Result of bootstrap operation
+#[derive(Debug, Clone)]
+pub struct BootstrapResult {
+    /// Number of bootstrap peers successfully connected
+    pub connected_count: usize,
+    /// Number of bootstrap peers that failed to connect
+    pub failed_count: usize,
+    /// Whether Kademlia bootstrap query was initiated
+    pub query_initiated: bool,
+}
 
 /// High-level network manager providing thread-safe access to P2P networking
 #[derive(Debug)]
@@ -73,6 +85,14 @@ enum NetworkCommand {
 
     /// Get connection capacity status
     GetConnectionCapacity(oneshot::Sender<ConnectionCapacityStatus>),
+
+    /// Trigger bootstrap process manually
+    TriggerBootstrap {
+        response: oneshot::Sender<BootstrapResult>,
+    },
+
+    /// Get list of bootstrap peer IDs
+    GetBootstrapPeerIds(oneshot::Sender<Vec<PeerId>>),
 }
 
 /// Connection capacity status
@@ -123,6 +143,16 @@ struct NetworkEventLoop {
     /// Incremented on ConnectionEstablished, decremented on ConnectionClosed.
     /// Used with connection_limits to gate new inbound connections.
     active_connections: usize,
+
+    /// Bootstrap peer states for tracking connection attempts
+    /// Set of peer IDs that are bootstrap peers (for retry prioritization)
+    bootstrap_peer_ids: HashSet<PeerId>,
+
+    /// Bootstrap configuration
+    bootstrap_config: BootstrapConfig,
+
+    /// Whether initial bootstrap has been triggered
+    bootstrap_initiated: bool,
 }
 
 impl NetworkManager {
@@ -296,6 +326,19 @@ impl NetworkManager {
 
         persistent_registry.start_background_flush();
 
+        // Parse bootstrap peers and load into registry
+        let (bootstrap_peer_ids, bootstrap_known_peers) =
+            Self::parse_bootstrap_peers(&config.bootstrap_peers);
+
+        // Load bootstrap peers into existing known_peers infrastructure
+        if !bootstrap_known_peers.is_empty() {
+            persistent_registry.bulk_load_known_peers(bootstrap_known_peers);
+            info!(
+                bootstrap_peer_count = bootstrap_peer_ids.len(),
+                "Loaded bootstrap peers into registry"
+            );
+        }
+
         Ok(NetworkEventLoop {
             swarm,
             command_rx,
@@ -305,7 +348,32 @@ impl NetworkManager {
             peer_discovery_source: HashMap::new(),
             connection_limits: config.connection_limits.clone(),
             active_connections: 0,
+            bootstrap_peer_ids,
+            bootstrap_config: config.bootstrap.clone(),
+            bootstrap_initiated: false,
         })
+    }
+
+    /// Parse bootstrap addresses into peer IDs and known_peers map
+    fn parse_bootstrap_peers(
+        addrs: &[Multiaddr],
+    ) -> (HashSet<PeerId>, HashMap<PeerId, Vec<Multiaddr>>) {
+        let mut peer_ids = HashSet::new();
+        let mut known_peers: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
+
+        for addr in addrs {
+            if let Some(peer_id) = addr.iter().find_map(|p| match p {
+                Protocol::P2p(id) => Some(id),
+                _ => None,
+            }) {
+                peer_ids.insert(peer_id);
+                known_peers.entry(peer_id).or_default().push(addr.clone());
+            } else {
+                warn!(address = %addr, "Bootstrap address missing /p2p/ component, skipping");
+            }
+        }
+
+        (peer_ids, known_peers)
     }
 
     async fn spawn_event_loop(
@@ -484,6 +552,41 @@ impl NetworkManager {
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
     }
+
+    /// Manually trigger bootstrap process
+    ///
+    /// Dials all bootstrap peers and initiates Kademlia bootstrap query.
+    /// Useful after network reconnection or configuration changes.
+    pub async fn trigger_bootstrap(&self) -> Result<BootstrapResult, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::TriggerBootstrap {
+                response: response_tx,
+            })
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Get list of configured bootstrap peer IDs
+    pub async fn bootstrap_peer_ids(&self) -> Result<Vec<PeerId>, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::GetBootstrapPeerIds(response_tx))
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
 }
 
 impl NetworkEventLoop {
@@ -491,32 +594,255 @@ impl NetworkEventLoop {
     async fn run(&mut self) {
         info!("Network event loop started");
 
+        self.run_event_loop().await;
+        self.shutdown().await;
+
+        info!("Network event loop stopped");
+    }
+
+    /// Core event loop with bootstrap scheduling and retry
+    async fn run_event_loop(&mut self) {
+        // Calculate bootstrap delay upfront
+        let bootstrap_delay_ms =
+            if self.bootstrap_config.auto_dial || self.bootstrap_config.auto_bootstrap {
+                info!(
+                    delay_ms = self.bootstrap_config.startup_delay_ms,
+                    "Bootstrap scheduled"
+                );
+                self.bootstrap_config.startup_delay_ms
+            } else {
+                debug!("Bootstrap disabled");
+                u64::MAX
+            };
+
+        // Create the sleep future with the extracted value
+        let bootstrap_delay = tokio::time::sleep(Duration::from_millis(bootstrap_delay_ms));
+        tokio::pin!(bootstrap_delay);
+
+        // Periodic retry interval for failed bootstrap peers (every 5 seconds)
+        let mut retry_interval = tokio::time::interval(Duration::from_secs(5));
+        retry_interval.tick().await; // Skip immediate first tick
+
         loop {
             tokio::select! {
+                // One-shot initial bootstrap trigger
+                _ = &mut bootstrap_delay, if !self.bootstrap_initiated => {
+                    self.execute_bootstrap();
+                }
+
+                // Periodic retry of failed bootstrap peers
+                _ = retry_interval.tick(), if self.bootstrap_initiated && !self.bootstrap_peer_ids.is_empty() => {
+                    self.retry_bootstrap_peers();
+                }
+
                 // Handle Swarm events
                 event = self.swarm.select_next_some() => {
                     self.handle_swarm_event(event).await;
                 }
 
-                // Handle commands from NetworkManager
+                // Handle commands
                 Some(command) = self.command_rx.recv() => {
                     if self.handle_command(command).await {
-                        // Shutdown requested
-                        info!("Event loop shutting down");
                         break;
                     }
                 }
             }
         }
+    }
 
-        // Graceful shutdown of persistent registry
-        // Final flush before exiting
+    /// Graceful shutdown
+    async fn shutdown(&mut self) {
         info!("Flushing persistent peer registry before shutdown");
         if let Err(e) = self.peer_registry.flush() {
-            warn!("Failed to flush peer registry on shutdown: {}", e);
+            warn!(error = %e, "Failed to flush peer registry on shutdown");
+        }
+    }
+
+    // ==================== Bootstrap Logic ====================
+
+    /// Execute the full bootstrap process
+    fn execute_bootstrap(&mut self) -> BootstrapResult {
+        if self.bootstrap_initiated {
+            return BootstrapResult {
+                connected_count: 0,
+                failed_count: 0,
+                query_initiated: false,
+            };
         }
 
-        info!("Network event loop stopped");
+        self.bootstrap_initiated = true;
+
+        info!(
+            peer_count = self.bootstrap_peer_ids.len(),
+            auto_dial = self.bootstrap_config.auto_dial,
+            auto_bootstrap = self.bootstrap_config.auto_bootstrap,
+            "Executing bootstrap"
+        );
+
+        let (connected, failed) = self.dial_bootstrap_peers();
+        let query_initiated = self.initiate_kademlia_bootstrap();
+
+        BootstrapResult {
+            connected_count: connected,
+            failed_count: failed,
+            query_initiated,
+        }
+    }
+
+    /// Dial all bootstrap peers using addresses from peer registry
+    fn dial_bootstrap_peers(&mut self) -> (usize, usize) {
+        if !self.bootstrap_config.auto_dial {
+            return (0, 0);
+        }
+
+        let mut attempts = 0;
+        let mut failures = 0;
+
+        let bootstrap_ids: Vec<PeerId> = self.bootstrap_peer_ids.iter().copied().collect();
+
+        for peer_id in bootstrap_ids {
+            if self.peer_registry.is_connected(&peer_id) {
+                debug!(peer_id = %peer_id, "Bootstrap peer already connected");
+                attempts += 1; // Count as successful
+                continue;
+            }
+
+            if self.dialing_peers.contains(&peer_id) {
+                debug!(peer_id = %peer_id, "Bootstrap peer already dialing");
+                continue;
+            }
+
+            if let Some(addrs) = self.peer_registry.get_known_addresses(&peer_id) {
+                if let Some(addr) = addrs.first() {
+                    self.peer_discovery_source
+                        .insert(peer_id, DiscoverySource::Bootstrap);
+                    self.last_dial_attempt.insert(peer_id, StdInstant::now());
+
+                    info!(peer_id = %peer_id, address = %addr, "Dialing bootstrap peer");
+
+                    match self.swarm.dial(addr.clone()) {
+                        Ok(_) => {
+                            self.dialing_peers.insert(peer_id);
+                            attempts += 1;
+                        }
+                        Err(e) => {
+                            warn!(peer_id = %peer_id, error = %e, "Failed to dial bootstrap peer");
+                            failures += 1;
+                        }
+                    }
+                }
+            } else {
+                warn!(peer_id = %peer_id, "No known addresses for bootstrap peer");
+                failures += 1;
+            }
+        }
+
+        info!(
+            dial_attempts = attempts,
+            failures = failures,
+            "Bootstrap peer dialing complete"
+        );
+
+        (attempts, failures)
+    }
+
+    /// Initiate Kademlia DHT bootstrap query
+    fn initiate_kademlia_bootstrap(&mut self) -> bool {
+        if !self.bootstrap_config.auto_bootstrap {
+            return false;
+        }
+
+        match self.swarm.behaviour_mut().bootstrap() {
+            Ok(query_id) => {
+                info!(query_id = ?query_id, "Kademlia bootstrap query initiated");
+                true
+            }
+            Err(e) => {
+                warn!(error = ?e, "Kademlia bootstrap failed - no known peers in routing table");
+                false
+            }
+        }
+    }
+
+    // ==================== Bootstrap Retry Logic ====================
+
+    /// Check if a peer is a bootstrap peer
+    fn _is_bootstrap_peer(&self, peer_id: &PeerId) -> bool {
+        self.bootstrap_peer_ids.contains(peer_id)
+    }
+
+    /// Retry disconnected bootstrap peers with exponential backoff
+    fn retry_bootstrap_peers(&mut self) {
+        let now = StdInstant::now();
+        let bootstrap_ids: Vec<PeerId> = self.bootstrap_peer_ids.iter().copied().collect();
+
+        for peer_id in bootstrap_ids {
+            if self.should_retry_bootstrap_peer(&peer_id, now) {
+                self.retry_single_bootstrap_peer(peer_id, now);
+            }
+        }
+    }
+
+    /// Check if we should retry connecting to a bootstrap peer
+    fn should_retry_bootstrap_peer(&self, peer_id: &PeerId, now: StdInstant) -> bool {
+        // Skip if connected or dialing
+        if self.peer_registry.is_connected(peer_id) || self.dialing_peers.contains(peer_id) {
+            return false;
+        }
+
+        // Check retry count against max
+        let attempts = self.peer_registry.get_reconnection_count(peer_id);
+        if attempts >= self.bootstrap_config.max_retries {
+            return false;
+        }
+
+        // Check backoff timing
+        let backoff = self.calculate_backoff(attempts);
+        self.last_dial_attempt
+            .get(peer_id)
+            .map(|last| now.duration_since(*last) >= backoff)
+            .unwrap_or(true)
+    }
+
+    /// Calculate exponential backoff duration: base_delay * 2^attempts
+    fn calculate_backoff(&self, attempts: u32) -> Duration {
+        let exponent = attempts.min(10); // Cap to prevent overflow
+        let multiplier = 1u64 << exponent;
+        let ms = self
+            .bootstrap_config
+            .retry_delay_base_ms
+            .saturating_mul(multiplier);
+        Duration::from_millis(ms)
+    }
+
+    /// Retry connecting to a single bootstrap peer
+    fn retry_single_bootstrap_peer(&mut self, peer_id: PeerId, now: StdInstant) {
+        let Some(addrs) = self.peer_registry.get_known_addresses(&peer_id) else {
+            return;
+        };
+
+        let Some(addr) = addrs.first() else {
+            return;
+        };
+
+        let attempts = self.peer_registry.get_reconnection_count(&peer_id);
+        let next_backoff = self.calculate_backoff(attempts + 1);
+
+        info!(
+            peer_id = %peer_id,
+            attempt = attempts + 1,
+            max_retries = self.bootstrap_config.max_retries,
+            next_backoff_ms = next_backoff.as_millis(),
+            "Retrying bootstrap peer connection"
+        );
+
+        self.last_dial_attempt.insert(peer_id, now);
+        self.peer_discovery_source
+            .insert(peer_id, DiscoverySource::Bootstrap);
+
+        if self.swarm.dial(addr.clone()).is_ok() {
+            self.dialing_peers.insert(peer_id);
+        }
     }
 
     /// Handle individual Swarm events
@@ -609,7 +935,6 @@ impl NetworkEventLoop {
 
                 // Remove from dialing set if we were dialing
                 self.dialing_peers.remove(&peer_id);
-
                 self.peer_registry.on_connection_established(
                     peer_id,
                     endpoint.get_remote_address().clone(),
@@ -756,6 +1081,16 @@ impl NetworkEventLoop {
                 };
 
                 let _ = response.send(status);
+            }
+
+            NetworkCommand::TriggerBootstrap { response } => {
+                let result = self.execute_bootstrap();
+                let _ = response.send(result);
+            }
+
+            NetworkCommand::GetBootstrapPeerIds(response) => {
+                let peer_ids: Vec<PeerId> = self.bootstrap_peer_ids.iter().copied().collect();
+                let _ = response.send(peer_ids);
             }
         }
 
@@ -940,6 +1275,7 @@ mod tests {
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
+            bootstrap: BootstrapConfig::default(),
         };
 
         (config, dht_temp, peer_reg_temp)
@@ -1144,6 +1480,7 @@ mod tests {
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
+            bootstrap: BootstrapConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1168,6 +1505,7 @@ mod tests {
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
+            bootstrap: BootstrapConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1193,6 +1531,7 @@ mod tests {
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
             connection_limits: ConnectionLimits::default(),
+            bootstrap: BootstrapConfig::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
