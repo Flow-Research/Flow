@@ -1,46 +1,61 @@
 # Flow Architecture Overview
 
-Flow is a decentralized coordination platform enabling agents and users to co-create, manage, and reward knowledge, tasks, and compute in a verifiable, local-first environment.
+Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data locally or in trusted environments, agents execute with signed events and receipts, state converges via sync, and programmable incentives settle contributions automatically with provenance and privacy by default.
 
+## Concept Diagram
+
+![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
+
+The core idea is that users get to manage a personal Knowledge Base. While different forms of experiences are engineered over the Knowledge Base, the KB is made available primarily to users' personal agents. Users can choose to expose sections of their data over a network to other agents and users. The network enforces access control rules. Permissions and payouts are automated.
+
+With users and agents co-creating and sharing knowledge, and with contributions being evaluated and rewarded, an economy can emerge over the network. The value of the network grows with each verified, high-quality contribution that others can safely reuse.
+
+In time, we intend to make trust, provenance, and coordination legible enough that humans and agents can decide who to listen to, what to act on, and under which conditions, and then automate around that.
+
+Well-designed incentive mechanisms in open adversarial networks can accomplish a few things:
+- Allocate scarce compute, data, attention, and more.
+- Compensate people for real contributions.
+- Penalise fraud and low-quality behaviour.
+
+Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge safely over the internet.
 
 ## Core Principles
 
 1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
 2.  **Capability-Based Access:** Authentication and authorization is decentralized. Permissions are based on Verifiable Credentials and Capabilities.
 3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
-4.  **Peer to Peer networking:** Agents and users connect and coordinate via a decentralized network.
-5.  **Decentralized Execution:** Execution is local-first, workflows can be distributed and executed in a decentralized manner.
+4.  **Peer-to-Peer networking:** Agents and users connect and coordinate via a decentralized network.
+5.  **Decentralized Execution:** Execution is local-first, edge-native, cloud-optional. Workflows can be distributed and executed in a decentralized manner.
 6.  **Agent Explainability (SLRPA):** Agents operate on a Sense → Learn → Reason → Predict → Act cycle.
 7.  **Programmable Incentives:** Rewards and reputation are customizable and trackable.
 
 
 ## Layered Architecture
 
-1.  [**Storage Layer**](./specs/01_storage_layer.md): Implements the local-first, persistent storage using CRDTs over content-addressed systems (like IPFS/BadgerDB).
+1.  [**Storage Layer**](./specs/01_storage_layer.md): Implements persistent storage over content-addressed systems (like IPFS).
 2.  [**Access & Auth Layer**](./specs/02_access_auth_layer.md): Manages identity (DIDs) and permissions using capability-based systems.
 3.  [**Network Layer**](./specs/03_network_layer.md): Handles peer-to-peer discovery, communication, data synchronization, and transport, secured by the Auth Layer.
-4.  [**Coordination & Sync Layer**](./specs/04_coordination_sync_layer.md): Ensures state consistency across different agents and nodes using the underlying CRDT mechanisms.
+4.  [**Coordination & Sync Layer**](./specs/04_coordination_sync_layer.md): Ensures state consistency across different agents and nodes using the underlying sync mechanisms.
 5.  [**Knowledge Graph Layer**](./specs/05_knowledge_graph.md): Provides the semantic context (KG) for data.
 6. [**MCP Layer**](./specs/06_mcp.md): Defines how external models/tools (via Model Context Protocol) interact with user content.
-7.  [**User Interface / UX Layer**](./specs/07_ui_ux_layer.md): Provides the means for users to interact with the system, inspect the graph, manage agents, delegate tasks, etc.
+7.  [**User Interface / UX Layer**](./specs/07_ui_ux_layer.md): Provides the means for users to interact with the system, manage agents, delegate tasks, etc.
 8.  [**Agent Layer**](./specs/08_agent_layer.md): Manages agent lifecycles (Sense→Learn→Reason→Predict→Act) and ensures their actions are explainable.
 9.  [**Execution Layer**](./specs/09_execution_layer.md): Handles the definition and running of workflows as Directed Acyclic Graphs (DAGs), managing signed state transitions.
 10.  [**Compute Layer**](./specs/10_compute_layer.md): Executes the actual computational tasks defined in the Execution Layer, potentially using various backends (local, distributed like Bacalhau) and supporting verifiable computation.
 11. [**Incentive Layer**](./specs/11_incentive_layer.md): Defines and manages programmable rewards and contribution tracking based on provenance data in the knowledge graph.
-12. **Physical Layer**: Provides verifiable access to decentralized physical infrastructure (compute, network, storage, sensors, actuators), using DePIN protocols and trust attestations.
 
 
 ## Flow of Activity
 
-1.  Create/update objects (CRDT deltas, sync DAG).
+1.  Create/update objects.
 2.  Sign with DIDs, governed by capability tokens.
-3.  Discover and connect to Flow network.
+3.  Discover and connect to the Flow network.
 4.  Grant access control and permissions to objects.
-5.  Users can spin up Agents connected to their knowledge graphs. 
+5.  Users can spin up Agents connected to their knowledge base. 
 6.  Agents execute via SLRPA (Sense → Learn → Reason → Predict → Act).
 7.  Results logged, verified.
 8.  Rewards triggered by provenance/policy.
-9.  Explore via graph UI.
+9.  Explore the knowledge base via an intuitive UI.
 
 
 
@@ -91,6 +106,7 @@ You can run commands (called "targets") on specific projects using the `nx` CLI 
     ```bash
     nx test back-end
     ```
+
 
 #### User Interface Commands (`user-interface`)
 

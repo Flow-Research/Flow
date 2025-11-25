@@ -8,7 +8,7 @@ Flow is a decentralized coordination platform enabling agents and users to co-cr
 1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
 2.  **Capability-Based Access:** Authentication and authorization is decentralized. Permissions are based on Verifiable Credentials and Capabilities.
 3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
-4.  **Peer to Peer networking:** Agents and users connect and coordinate via a decentralized network.
+4.  **Peer-to-Peer networking:** Agents and users connect and coordinate via a decentralized network.
 5.  **Decentralized Execution:** Execution is local-first, workflows can be distributed and executed in a decentralized manner.
 6.  **Agent Explainability (SLRPA):** Agents operate on a Sense → Learn → Reason → Predict → Act cycle.
 7.  **Programmable Incentives:** Rewards and reputation are customizable and trackable.
@@ -16,10 +16,10 @@ Flow is a decentralized coordination platform enabling agents and users to co-cr
 
 ## Layered Architecture
 
-1.  [**Storage Layer**](./01_storage_layer.md): Implements the local-first, persistent storage using CRDTs over content-addressed systems (like IPFS/BadgerDB).
+1.  [**Storage Layer**](./01_storage_layer.md): Implements persistent storage over content-addressed systems (like IPFS).
 2.  [**Access & Auth Layer**](./02_access_auth_layer.md): Manages identity (DIDs) and permissions using capability-based systems.
 3.  [**Network Layer**](./03_network_layer.md): Handles peer-to-peer discovery, communication, data synchronization, and transport, secured by the Auth Layer.
-4.  [**Coordination & Sync Layer**](./04_coordination_sync_layer.md): Ensures state consistency across different agents and nodes using the underlying CRDT mechanisms.
+4.  [**Coordination & Sync Layer**](./04_coordination_sync_layer.md): Ensures state consistency across different agents and nodes using the underlying sync mechanisms.
 5.  [**Knowledge Graph Layer**](./05_knowledge_graph.md): Provides the semantic context (KG) for data. 
 6. [**MCP Layer**](./06_mcp.md): Defines how external models/tools (via Model Context Protocol) interact with user content.
 7.  [**User Interface / UX Layer**](./07_ui_ux_layer.md): Provides the means for users to interact with the system, inspect the graph, manage agents, delegate tasks, etc.
@@ -31,13 +31,13 @@ Flow is a decentralized coordination platform enabling agents and users to co-cr
 
 ## Flow of Activity
 
-1.  Create/update objects (CRDT deltas, sync DAG).
+1.  Create/update objects.
 2.  Sign with DIDs, governed by capability tokens.
-3.  Discover and connect to Flow network.
+3.  Discover and connect to the Flow network.
 4.  Grant access control and permissions to objects.
-5.  Users can spin up Agents connected to their knowledge graphs. 
+5.  Users can spin up Agents connected to their knowledge base. 
 6.  Agents execute via SLRPA (Sense → Learn → Reason → Predict → Act).
 7.  Results logged, verified.
 8.  Rewards triggered by provenance/policy.
-9.  Explore via graph UI.
+9.  Explore the knowledge base via an intuitive UI.
 
