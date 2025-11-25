@@ -2,7 +2,7 @@
 
 ## Design Goals
 
-*   **Local-first:** Data resides primarily on the user's/agent's device.
+*   **Local-first, edge-native, cloud-optional:** Data resides on the user's/agent's local device, and in trusted environments.
 *   **Sovereign:** Users/agents control their data.
 *   **Private:** Encryption and access control are fundamental.
 *   **Verifiable:** Data integrity is ensured via content addressing and signatures.
@@ -17,7 +17,7 @@ Layered approach to storage management:
 1.  **Ephemeral Cache:** In-memory storage for fast access (optional).
 2.  **Persistent Local CRDT Store:** The primary storage engine.
     *   Likely based on **Any-Sync** or a similar CRDT framework.
-    *   Uses a local key-value store (e.g., BadgerDB) as the underlying persistence.
+    *   Uses a local key-value store (RocksDB) as the underlying persistence.
 3.  **Hot Sync Storage (Optional):** Relays or dedicated nodes (e.g., Storacha) for faster sync and availability among online peers.
 4.  **Cold Archive Storage (Optional):** Long-term, high-latency storage using content-addressed networks like IPFS/Filecoin for backup and large data blobs.
 
@@ -49,7 +49,6 @@ Data Representation:
 ## CRDTs & Synchronization
 
 *   Leverages CRDTs for conflict-free state management.
-*   Likely uses libraries like **Any-Sync** (potentially extended).
 *   Core CRDT types:
     *   LWW-Register/Map (Last-Writer-Wins)
     *   OR-Set (Observed-Remove Set)
