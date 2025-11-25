@@ -128,31 +128,45 @@ async fn test_mdns_two_nodes_discover_each_other() {
     manager2.start(&config2).await.unwrap();
     let peer_id2 = manager2.local_peer_id();
 
-    // Wait for mDNS discovery and connection (may take 5-10 seconds)
-    sleep(Duration::from_secs(10)).await;
+    // Poll with retries instead of fixed sleep
+    let max_attempts = 20;
+    let poll_interval = Duration::from_millis(500);
+    let mut discovered = false;
 
-    // Node 1 should discover node 2
-    let peer_count1 = manager1.peer_count().await.unwrap();
+    for attempt in 1..=max_attempts {
+        sleep(poll_interval).await;
+
+        let peer_count1 = manager1.peer_count().await.unwrap();
+        let peer_count2 = manager2.peer_count().await.unwrap();
+
+        if peer_count1 >= 1 && peer_count2 >= 1 {
+            // Verify mutual discovery
+            let peers1 = manager1.connected_peers().await.unwrap();
+            let peers2 = manager2.connected_peers().await.unwrap();
+
+            let found_node2 = peers1.iter().any(|p| p.peer_id == *peer_id2);
+            let found_node1 = peers2.iter().any(|p| p.peer_id == *peer_id1);
+
+            if found_node2 && found_node1 {
+                discovered = true;
+                tracing::info!(attempt = attempt, "Nodes discovered each other");
+                break;
+            }
+        }
+
+        tracing::debug!(
+            attempt = attempt,
+            peer_count1 = peer_count1,
+            peer_count2 = peer_count2,
+            "Waiting for discovery..."
+        );
+    }
+
     assert!(
-        peer_count1 >= 1,
-        "Node 1 should have discovered at least one peer"
+        discovered,
+        "Nodes should discover each other within {} seconds",
+        max_attempts as f64 * poll_interval.as_secs_f64()
     );
-
-    // Node 2 should discover node 1
-    let peer_count2 = manager2.peer_count().await.unwrap();
-    assert!(
-        peer_count2 >= 1,
-        "Node 2 should have discovered at least one peer"
-    );
-
-    // Verify mutual discovery
-    let peers1 = manager1.connected_peers().await.unwrap();
-    let found_node2 = peers1.iter().any(|p| p.peer_id == *peer_id2);
-    assert!(found_node2, "Node 1 should have discovered node 2");
-
-    let peers2 = manager2.connected_peers().await.unwrap();
-    let found_node1 = peers2.iter().any(|p| p.peer_id == *peer_id1);
-    assert!(found_node1, "Node 2 should have discovered node 1");
 
     // Cleanup
     manager1.stop().await.unwrap();
