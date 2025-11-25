@@ -1,0 +1,758 @@
+# Flow User Interface - TypeScript/React Rules
+# Workspace-level guidance for web and mobile frontends
+
+## Workspace Overview
+
+Flow's user interface consists of two applications:
+
+### Applications
+- **flow-web/** - Desktop web application (Electron + Vite + React)
+- **flow-app/** - Mobile application (Expo + React Native)
+
+### Shared Characteristics
+- **Local-first architecture** - Offline-capable, syncs when connected
+- **Backend integration** - Connects to Flow Rust backend via REST/WebSocket or any available transport
+- **Cross-platform** - Web, macOS, Windows, Linux (flow-web); iOS, Android (flow-app)
+
+## Workspace-Wide Standards
+
+### 1. Technology Stack
+
+#### flow-web (Desktop)
+- **Framework**: React 18
+- **Build tool**: Vite
+- **Desktop runtime**: Electron
+- **Language**: TypeScript
+- **Styling**: CSS modules or inline styles
+
+#### flow-app (Mobile)
+- **Framework**: React Native (Expo)
+- **Router**: Expo Router (file-based routing)
+- **Navigation**: React Navigation
+- **Language**: TypeScript
+- **Components**: Expo components + custom UI
+
+### 2. TypeScript Standards
+
+**Strict mode enabled**:
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true
+  }
+}
+```
+
+**Type safety patterns**:
+```typescript
+// REQUIRED: Explicit return types for functions
+export function fetchSpaces(): Promise<Space[]> {
+  return api.get('/spaces');
+}
+
+// REQUIRED: Proper error handling with types
+interface ApiError {
+  message: string;
+  code: string;
+}
+
+async function handleRequest(): Promise<Result<Data, ApiError>> {
+  try {
+    const data = await fetchData();
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, error: error as ApiError };
+  }
+}
+
+// FORBIDDEN: any types without justification
+function bad(data: any) { /* ... */ } // ❌
+```
+
+### 3. React Patterns
+
+#### Component Structure
+```typescript
+// REQUIRED: Functional components with TypeScript
+interface ButtonProps {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
+export function Button({ label, onClick, disabled = false }: ButtonProps) {
+  return (
+    <button onClick={onClick} disabled={disabled}>
+      {label}
+    </button>
+  );
+}
+
+// FORBIDDEN: Default exports (prefer named exports)
+export default function Button() { /* ... */ } // ❌
+```
+
+#### Hooks
+```typescript
+// REQUIRED: Custom hooks for reusable logic
+function useSpaces() {
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    async function loadSpaces() {
+      setLoading(true);
+      try {
+        const data = await fetchSpaces();
+        setSpaces(data);
+      } catch (err) {
+        setError(err as Error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadSpaces();
+  }, []);
+
+  return { spaces, loading, error };
+}
+
+// Usage
+function SpacesList() {
+  const { spaces, loading, error } = useSpaces();
+  
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorMessage error={error} />;
+  
+  return <ul>{spaces.map(s => <SpaceItem key={s.id} space={s} />)}</ul>;
+}
+```
+
+#### State Management
+- **Local state**: `useState` for component-specific state
+- **Shared state**: Context API for app-wide state
+- **Server state**: Custom hooks wrapping backend API calls
+- **Future**: Consider Zustand or Jotai for complex state
+
+```typescript
+// Context for app-wide state
+interface AppContextType {
+  user: User | null;
+  setUser: (user: User | null) => void;
+}
+
+const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  
+  return (
+    <AppContext.Provider value={{ user, setUser }}>
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export function useApp() {
+  const context = useContext(AppContext);
+  if (!context) throw new Error('useApp must be used within AppProvider');
+  return context;
+}
+```
+
+### 4. Backend Integration
+
+#### API Client Pattern
+```typescript
+// utils/api.ts
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+interface ApiResponse<T> {
+  data?: T;
+  error?: string;
+}
+
+class FlowApiClient {
+  private baseUrl: string;
+  
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
+  
+  async get<T>(endpoint: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`);
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.statusText}`);
+    }
+    return response.json();
+  }
+  
+  async post<T, D>(endpoint: string, data: D): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.statusText}`);
+    }
+    return response.json();
+  }
+}
+
+export const api = new FlowApiClient(API_BASE_URL);
+
+// Usage in components
+async function createSpace(directory: string) {
+  try {
+    const space = await api.post<Space, CreateSpaceRequest>(
+      '/api/v1/spaces',
+      { directory }
+    );
+    return { ok: true, space };
+  } catch (error) {
+    return { ok: false, error: error as Error };
+  }
+}
+```
+
+#### WebSocket Pattern
+```typescript
+// utils/websocket.ts
+class FlowWebSocket {
+  private ws: WebSocket | null = null;
+  private listeners: Map<string, Set<(data: any) => void>> = new Map();
+  
+  connect(url: string) {
+    this.ws = new WebSocket(url);
+    
+    this.ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      const handlers = this.listeners.get(message.type);
+      if (handlers) {
+        handlers.forEach(handler => handler(message.data));
+      }
+    };
+  }
+  
+  subscribe(eventType: string, handler: (data: any) => void) {
+    if (!this.listeners.has(eventType)) {
+      this.listeners.set(eventType, new Set());
+    }
+    this.listeners.get(eventType)!.add(handler);
+    
+    // Return unsubscribe function
+    return () => {
+      this.listeners.get(eventType)?.delete(handler);
+    };
+  }
+  
+  send(type: string, data: any) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, data }));
+    }
+  }
+  
+  disconnect() {
+    this.ws?.close();
+    this.ws = null;
+  }
+}
+
+export const ws = new FlowWebSocket();
+
+// Usage in components
+function NetworkStatus() {
+  const [peerCount, setPeerCount] = useState(0);
+  
+  useEffect(() => {
+    ws.connect('ws://localhost:8081');
+    
+    const unsubscribe = ws.subscribe('peer_count', (data) => {
+      setPeerCount(data.count);
+    });
+    
+    return () => {
+      unsubscribe();
+      ws.disconnect();
+    };
+  }, []);
+  
+  return <div>Connected peers: {peerCount}</div>;
+}
+```
+
+### 5. Error Handling
+
+**Always handle errors gracefully**:
+```typescript
+// Component-level error boundaries
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('Error caught by boundary:', error, errorInfo);
+  }
+  
+  render() {
+    if (this.state.hasError) {
+      return <ErrorFallback />;
+    }
+    return this.props.children;
+  }
+}
+
+// Async error handling
+async function withErrorHandling<T>(
+  promise: Promise<T>,
+  errorMessage: string
+): Promise<T | null> {
+  try {
+    return await promise;
+  } catch (error) {
+    console.error(errorMessage, error);
+    // Show user-friendly error notification
+    showNotification({
+      type: 'error',
+      message: errorMessage,
+    });
+    return null;
+  }
+}
+```
+
+### 6. Local-First Patterns
+
+**Offline support**:
+```typescript
+// Check connectivity
+function useOnlineStatus() {
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  
+  useEffect(() => {
+    function handleOnline() { setIsOnline(true); }
+    function handleOffline() { setIsOnline(false); }
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+  
+  return isOnline;
+}
+
+// Optimistic UI updates
+function useOptimisticUpdate<T>() {
+  const [data, setData] = useState<T[]>([]);
+  
+  async function addItem(item: T) {
+    // Add optimistically
+    setData(prev => [...prev, item]);
+    
+    try {
+      // Sync with backend
+      await api.post('/items', item);
+    } catch (error) {
+      // Rollback on failure
+      setData(prev => prev.filter(i => i !== item));
+      throw error;
+    }
+  }
+  
+  return { data, addItem };
+}
+```
+
+**Local storage patterns**:
+```typescript
+// Type-safe localStorage wrapper
+class LocalStore<T> {
+  constructor(private key: string) {}
+  
+  get(): T | null {
+    const item = localStorage.getItem(this.key);
+    if (!item) return null;
+    try {
+      return JSON.parse(item) as T;
+    } catch {
+      return null;
+    }
+  }
+  
+  set(value: T): void {
+    localStorage.setItem(this.key, JSON.stringify(value));
+  }
+  
+  remove(): void {
+    localStorage.removeItem(this.key);
+  }
+}
+
+// Usage
+const userStore = new LocalStore<User>('user');
+```
+
+### 7. Platform-Specific Code
+
+#### flow-web (Electron)
+```typescript
+// Electron IPC communication
+interface ElectronAPI {
+  openDirectory: () => Promise<string | null>;
+  saveFile: (data: string) => Promise<void>;
+}
+
+declare global {
+  interface Window {
+    electronAPI?: ElectronAPI;
+  }
+}
+
+// Usage in components
+function DirectoryPicker() {
+  async function handleClick() {
+    if (window.electronAPI) {
+      const path = await window.electronAPI.openDirectory();
+      if (path) {
+        console.log('Selected:', path);
+      }
+    }
+  }
+  
+  return <button onClick={handleClick}>Open Directory</button>;
+}
+```
+
+#### flow-app (React Native)
+```typescript
+// Platform-specific imports
+import { Platform, StyleSheet } from 'react-native';
+
+const styles = StyleSheet.create({
+  container: {
+    padding: Platform.select({
+      ios: 20,
+      android: 16,
+      default: 16,
+    }),
+  },
+});
+
+// Platform checks
+if (Platform.OS === 'ios') {
+  // iOS-specific code
+} else if (Platform.OS === 'android') {
+  // Android-specific code
+}
+```
+
+### 8. Testing
+
+#### Unit Tests (Vitest/Jest)
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+
+describe('Button', () => {
+  it('calls onClick when clicked', () => {
+    const onClick = vi.fn();
+    render(<Button label="Click me" onClick={onClick} />);
+    
+    fireEvent.click(screen.getByText('Click me'));
+    
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+  
+  it('is disabled when disabled prop is true', () => {
+    render(<Button label="Click me" onClick={() => {}} disabled />);
+    
+    expect(screen.getByRole('button')).toBeDisabled();
+  });
+});
+```
+
+#### Integration Tests
+```typescript
+describe('Space creation flow', () => {
+  it('creates space and shows in list', async () => {
+    render(<App />);
+    
+    // Open create dialog
+    fireEvent.click(screen.getByText('New Space'));
+    
+    // Fill form
+    fireEvent.change(screen.getByLabelText('Directory'), {
+      target: { value: '/path/to/space' },
+    });
+    
+    // Submit
+    fireEvent.click(screen.getByText('Create'));
+    
+    // Verify space appears in list
+    await screen.findByText('/path/to/space');
+  });
+});
+```
+
+### 9. Styling Conventions
+
+**CSS Modules (flow-web)**:
+```typescript
+// Button.module.css
+.button {
+  padding: 8px 16px;
+  border-radius: 4px;
+  background: #007bff;
+  color: white;
+}
+
+.button:hover {
+  background: #0056b3;
+}
+
+// Button.tsx
+import styles from './Button.module.css';
+
+export function Button({ label }: { label: string }) {
+  return <button className={styles.button}>{label}</button>;
+}
+```
+
+**StyleSheet (flow-app)**:
+```typescript
+import { StyleSheet, TouchableOpacity, Text } from 'react-native';
+
+const styles = StyleSheet.create({
+  button: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#007bff',
+  },
+  buttonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});
+
+export function Button({ label }: { label: string }) {
+  return (
+    <TouchableOpacity style={styles.button}>
+      <Text style={styles.buttonText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+```
+
+### 10. Performance Optimization
+
+**React performance**:
+```typescript
+// Memoize expensive computations
+const expensiveValue = useMemo(() => {
+  return computeExpensiveValue(data);
+}, [data]);
+
+// Memoize callbacks
+const handleClick = useCallback(() => {
+  doSomething(id);
+}, [id]);
+
+// Memoize components
+const MemoizedComponent = React.memo(Component);
+
+// Virtual lists for large datasets (flow-app)
+import { FlatList } from 'react-native';
+
+function LargeList({ items }: { items: Item[] }) {
+  return (
+    <FlatList
+      data={items}
+      renderItem={({ item }) => <ItemView item={item} />}
+      keyExtractor={item => item.id}
+      removeClippedSubviews
+      maxToRenderPerBatch={10}
+      windowSize={10}
+    />
+  );
+}
+```
+
+### 11. Accessibility
+
+```typescript
+// REQUIRED: Semantic HTML (flow-web)
+<button aria-label="Close dialog" onClick={onClose}>
+  <CloseIcon />
+</button>
+
+// REQUIRED: Accessibility props (flow-app)
+<TouchableOpacity
+  accessible
+  accessibilityLabel="Close dialog"
+  accessibilityRole="button"
+  onPress={onClose}
+>
+  <CloseIcon />
+</TouchableOpacity>
+
+// Keyboard navigation
+function Dialog({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+  
+  return <div role="dialog">...</div>;
+}
+```
+
+### 12. Code Review Checklist
+
+Before submitting code:
+
+**Functionality**
+- [ ] Implements requested feature completely
+- [ ] Handles offline/online transitions
+- [ ] Graceful error handling with user feedback
+- [ ] Works on all target platforms (web/mobile)
+
+**Code Quality**
+- [ ] TypeScript strict mode compliance
+- [ ] No `any` types without justification
+- [ ] Proper error handling (try/catch, error boundaries)
+- [ ] Components have clear prop types
+
+**Performance**
+- [ ] No unnecessary re-renders (use React DevTools)
+- [ ] Expensive computations memoized
+- [ ] Large lists virtualized
+- [ ] Images optimized
+
+**Accessibility**
+- [ ] Semantic HTML (web) / accessibility props (mobile)
+- [ ] Keyboard navigation works
+- [ ] Screen reader friendly
+- [ ] Sufficient color contrast
+
+**Testing**
+- [ ] Unit tests for utility functions
+- [ ] Integration tests for user flows
+- [ ] Manual testing on target platforms
+
+### 13. Common Anti-Patterns
+
+❌ **DON'T**:
+- Use `any` type without justification
+- Mutate state directly (`state.value = x`)
+- Use inline functions in JSX without useCallback (causes re-renders)
+- Fetch data in render (use useEffect)
+- Forget cleanup in useEffect (memory leaks)
+- Hardcode API URLs (use environment variables)
+- Store sensitive data in localStorage
+- Use default exports (prefer named exports)
+
+✅ **DO**:
+- Use explicit types for all functions
+- Use setState or setter functions
+- Memoize callbacks with useCallback
+- Fetch in useEffect with cleanup
+- Return cleanup functions from useEffect
+- Use environment variables for configuration
+- Store sensitive tokens securely (not in localStorage)
+- Use named exports for better IDE support
+
+### 14. Environment Variables
+
+**flow-web (Vite)**:
+```typescript
+// .env
+VITE_API_URL=http://localhost:8080
+VITE_WS_URL=ws://localhost:8081
+
+// Usage
+const apiUrl = import.meta.env.VITE_API_URL;
+```
+
+**flow-app (Expo)**:
+```typescript
+// app.config.ts
+export default {
+  expo: {
+    extra: {
+      apiUrl: process.env.API_URL || 'http://localhost:8080',
+    },
+  },
+};
+
+// Usage
+import Constants from 'expo-constants';
+const apiUrl = Constants.expoConfig?.extra?.apiUrl;
+```
+
+### 15. Build & Deploy
+
+**flow-web**:
+```bash
+npm run dev          # Development server
+npm run build        # Production build
+npm run electron-dev # Electron dev mode
+npm run electron-pack # Package Electron app
+```
+
+**flow-app**:
+```bash
+npm start            # Expo dev server
+npm run ios          # iOS simulator
+npm run android      # Android emulator
+npx expo build       # Production build
+```
+
+---
+
+## Quick Reference
+
+### File Structure
+```
+user-interface/
+├── flow-web/          # Desktop (Electron)
+│   ├── src/
+│   │   ├── components/    # React components
+│   │   ├── types/         # TypeScript types
+│   │   ├── utils/         # Utilities (API client, etc.)
+│   │   ├── App.tsx        # Root component
+│   │   └── main.tsx       # Entry point
+│   └── public/
+│       ├── electron.cjs   # Electron main process
+│       └── preload.cjs    # Electron preload
+└── flow-app/          # Mobile (Expo)
+    ├── app/               # File-based routing
+    │   ├── (tabs)/        # Tab screens
+    │   └── _layout.tsx    # Root layout
+    ├── components/        # React Native components
+    ├── hooks/             # Custom hooks
+    └── constants/         # App constants
+```
+
+### Key Dependencies
+```
+flow-web:  react, vite, electron, typescript
+flow-app:  react-native, expo, expo-router, typescript
+```

@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use sea_orm::Iden;
 
 #[derive(Clone, Debug)]
 pub struct IndexingConfig {

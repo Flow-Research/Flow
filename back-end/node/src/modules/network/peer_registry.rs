@@ -2,6 +2,28 @@ use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::time::Instant;
+use tracing::{debug, info, warn};
+
+/// Discovery source for tracking how peer was found
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscoverySource {
+    /// Discovered via mDNS on local network
+    Mdns,
+    /// Discovered via Kademlia DHT
+    Dht,
+    /// Configured as bootstrap peer
+    Bootstrap,
+    /// Manually dialed by user/API
+    Manual,
+    /// Unknown or not tracked (for backwards compatibility)
+    Unknown,
+}
+
+impl Default for DiscoverySource {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
 
 /// Information about a connected peer
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +58,9 @@ pub struct PeerInfo {
 
     /// Whether this is an outbound (dialed) or inbound connection
     pub connection_direction: ConnectionDirection,
+
+    /// How this peer was discovered
+    pub discovery_source: DiscoverySource,
 }
 
 // Helper serializers for libp2p types
@@ -161,12 +186,101 @@ impl PeerRegistry {
         }
     }
 
+    /// Bulk load known peers from persistent storage
+    ///
+    /// This is used during initialization to restore historical peer data
+    /// without going through the connection lifecycle.
+    ///
+    /// # Arguments
+    /// * `peers` - Map of PeerID to their known addresses
+    pub fn bulk_load_known_peers(&mut self, peers: HashMap<PeerId, Vec<Multiaddr>>) {
+        let count = peers.len();
+
+        debug!(peer_count = count, "Bulk loading known peers into registry");
+
+        for (peer_id, addresses) in peers {
+            if addresses.is_empty() {
+                warn!(
+                    peer_id = %peer_id,
+                    "Skipping peer with no addresses during bulk load"
+                );
+                continue;
+            }
+
+            // Directly insert into known_peers, merging with any existing data
+            self.known_peers
+                .entry(peer_id)
+                .and_modify(|existing_addrs| {
+                    // Merge addresses, avoiding duplicates
+                    for addr in &addresses {
+                        if !existing_addrs.contains(addr) {
+                            existing_addrs.push(addr.clone());
+                        }
+                    }
+                })
+                .or_insert(addresses);
+        }
+
+        info!(
+            loaded_peers = count,
+            total_known_peers = self.known_peers.len(),
+            "Bulk loaded known peers into registry"
+        );
+    }
+
+    /// Bulk load reconnection counts from persistent storage
+    ///
+    /// This restores the reconnection statistics without going through
+    /// the connection lifecycle.
+    ///
+    /// # Arguments
+    /// * `counts` - Map of PeerID to their reconnection count
+    pub fn bulk_load_reconnection_counts(&mut self, counts: HashMap<PeerId, u32>) {
+        let count = counts.len();
+
+        debug!(
+            count = count,
+            "Bulk loading reconnection counts into registry"
+        );
+
+        for (peer_id, reconnection_count) in counts {
+            if reconnection_count == 0 {
+                // Skip zero counts to keep HashMap smaller
+                continue;
+            }
+
+            // Directly insert, taking the maximum if there's already a value
+            // (shouldn't happen in normal operation)
+            self.reconnection_counts
+                .entry(peer_id)
+                .and_modify(|existing| {
+                    if reconnection_count > *existing {
+                        warn!(
+                            peer_id = %peer_id,
+                            existing = *existing,
+                            loaded = reconnection_count,
+                            "Reconnection count conflict during bulk load, using maximum"
+                        );
+                        *existing = reconnection_count;
+                    }
+                })
+                .or_insert(reconnection_count);
+        }
+
+        info!(
+            loaded_counts = count,
+            total_tracked = self.reconnection_counts.len(),
+            "Bulk loaded reconnection counts into registry"
+        );
+    }
+
     /// Record a new connection
     pub fn on_connection_established(
         &mut self,
         peer_id: PeerId,
         address: Multiaddr,
         direction: ConnectionDirection,
+        discovery_source: DiscoverySource,
     ) {
         let now = Instant::now();
         self.total_connections += 1;
@@ -205,6 +319,7 @@ impl PeerRegistry {
                     connection_count: 1,
                     stats,
                     connection_direction: direction,
+                    discovery_source,
                 }
             });
 
@@ -320,10 +435,17 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
 
         assert_eq!(registry.peer_count(), 1);
+
         let peer_info = registry.get_peer(&peer_id).unwrap();
+
         assert_eq!(peer_info.connection_count, 1);
         assert_eq!(peer_info.addresses.len(), 1);
         assert_eq!(peer_info.addresses[0], addr);
@@ -332,6 +454,7 @@ mod tests {
             ConnectionDirection::Outbound
         );
         assert_eq!(peer_info.stats.reconnection_count, 0);
+        assert_eq!(peer_info.discovery_source, DiscoverySource::Mdns);
     }
 
     #[test]
@@ -340,10 +463,25 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Inbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
+        );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
         assert_eq!(peer_info.connection_direction, ConnectionDirection::Inbound);
+    }
+
+    #[test]
+    fn test_discovery_source_serialization() {
+        let source = DiscoverySource::Mdns;
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(json, r#""Mdns""#);
+
+        let deserialized: DiscoverySource = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, DiscoverySource::Mdns);
     }
 
     #[test]
@@ -353,8 +491,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Mdns,
+        );
 
         assert_eq!(registry.peer_count(), 1);
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -371,8 +519,18 @@ mod tests {
         let addr = create_test_addr();
 
         // Connect twice with same address
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
         assert_eq!(peer_info.connection_count, 2);
@@ -386,6 +544,7 @@ mod tests {
     #[test]
     fn test_multiple_different_peers() {
         let mut registry = PeerRegistry::new();
+
         let peer1 = create_test_peer_id();
         let peer2 = create_test_peer_id();
         let peer3 = create_test_peer_id();
@@ -394,16 +553,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         assert_eq!(registry.peer_count(), 3);
@@ -422,7 +584,12 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
 
         registry.on_connection_closed(&peer_id);
@@ -441,8 +608,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1, ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
 
         // Close one connection - peer should still be connected
@@ -475,6 +652,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         // Close connection multiple times (should saturate at 0)
@@ -494,7 +672,12 @@ mod tests {
         let addr = create_test_addr();
 
         // First connection
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(
             registry
                 .get_peer(&peer_id)
@@ -509,7 +692,12 @@ mod tests {
         assert_eq!(registry.peer_count(), 0);
 
         // Reconnect - should increment reconnection counter
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(registry.peer_count(), 1);
         assert_eq!(
             registry
@@ -524,7 +712,12 @@ mod tests {
         registry.on_connection_closed(&peer_id);
 
         // Reconnect again
-        registry.on_connection_established(peer_id, addr.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         assert_eq!(
             registry
                 .get_peer(&peer_id)
@@ -542,8 +735,18 @@ mod tests {
         let addr1 = create_test_addr_with_port(4001);
         let addr2 = create_test_addr_with_port(4002);
 
-        registry.on_connection_established(peer_id, addr1.clone(), ConnectionDirection::Outbound);
-        registry.on_connection_established(peer_id, addr2.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr1.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
+        registry.on_connection_established(
+            peer_id,
+            addr2.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
 
         // Disconnect
         registry.on_connection_closed(&peer_id);
@@ -585,16 +788,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peers = registry.connected_peers();
@@ -617,6 +823,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let first_last_seen = registry.get_peer(&peer_id).unwrap().last_seen;
@@ -647,6 +854,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -699,16 +907,19 @@ mod tests {
             peer1,
             create_test_addr_with_port(4001),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer2,
             create_test_addr_with_port(4002),
             ConnectionDirection::Inbound,
+            DiscoverySource::Manual,
         );
         registry.on_connection_established(
             peer3,
             create_test_addr_with_port(4003),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         // Disconnect one
@@ -763,6 +974,7 @@ mod tests {
             peer_id,
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
@@ -779,7 +991,12 @@ mod tests {
         let peer_id = create_test_peer_id();
         let addr = create_test_addr();
 
-        registry.on_connection_established(peer_id, addr, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            addr,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
+        );
         let peer_info = registry.get_peer(&peer_id).unwrap();
 
         // Serialize to JSON
@@ -804,7 +1021,8 @@ mod tests {
                     "reconnection_count": 0,
                     "avg_latency_ms": null
                 }},
-                "connection_direction": "Outbound"
+                "connection_direction": "Outbound",
+                "discovery_source": "Unknown"
             }}"#,
             peer_id_str
         );
@@ -827,6 +1045,7 @@ mod tests {
             create_test_peer_id(),
             create_test_addr(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Manual,
         );
 
         let stats = registry.stats();
@@ -877,7 +1096,12 @@ mod tests {
         for i in 0..num_peers {
             let peer_id = create_test_peer_id();
             let addr = create_test_addr_with_port(4000 + i);
-            registry.on_connection_established(peer_id, addr, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                addr,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Manual,
+            );
             peer_ids.push(peer_id);
         }
 
@@ -887,5 +1111,198 @@ mod tests {
         let stats = registry.stats();
         assert_eq!(stats.connected_peers, num_peers as usize);
         assert_eq!(stats.total_connections, num_peers);
+    }
+
+    #[test]
+    fn test_bulk_load_known_peers_empty() {
+        let mut registry = PeerRegistry::new();
+        let peers = HashMap::new();
+
+        registry.bulk_load_known_peers(peers);
+
+        assert_eq!(registry.known_peers.len(), 0);
+    }
+
+    #[test]
+    fn test_bulk_load_known_peers_single() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+        let mut peers = HashMap::new();
+        peers.insert(peer_id, vec![addr.clone()]);
+
+        registry.bulk_load_known_peers(peers);
+
+        assert_eq!(registry.known_peers.len(), 1);
+        assert!(registry.known_peers.contains_key(&peer_id));
+        assert_eq!(registry.known_peers.get(&peer_id).unwrap().len(), 1);
+        assert_eq!(registry.known_peers.get(&peer_id).unwrap()[0], addr);
+    }
+
+    #[test]
+    fn test_bulk_load_known_peers_multiple() {
+        let mut registry = PeerRegistry::new();
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        let peer3 = PeerId::random();
+
+        let addr1: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        let addr2: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+        let addr3: Multiaddr = "/ip4/127.0.0.1/tcp/4003".parse().unwrap();
+
+        let mut peers = HashMap::new();
+        peers.insert(peer1, vec![addr1.clone()]);
+        peers.insert(peer2, vec![addr2.clone(), addr3.clone()]);
+        peers.insert(peer3, vec![]);
+
+        registry.bulk_load_known_peers(peers);
+
+        // peer3 should be skipped due to empty addresses
+        assert_eq!(registry.known_peers.len(), 2);
+        assert!(registry.known_peers.contains_key(&peer1));
+        assert!(registry.known_peers.contains_key(&peer2));
+        assert!(!registry.known_peers.contains_key(&peer3));
+
+        assert_eq!(registry.known_peers.get(&peer1).unwrap().len(), 1);
+        assert_eq!(registry.known_peers.get(&peer2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_bulk_load_merges_with_existing() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+        let addr1: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        let addr2: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+
+        // Manually add one address
+        registry.known_peers.insert(peer_id, vec![addr1.clone()]);
+
+        // Bulk load with another address
+        let mut peers = HashMap::new();
+        peers.insert(peer_id, vec![addr2.clone()]);
+
+        registry.bulk_load_known_peers(peers);
+
+        // Should have both addresses
+        assert_eq!(registry.known_peers.get(&peer_id).unwrap().len(), 2);
+        assert!(registry.known_peers.get(&peer_id).unwrap().contains(&addr1));
+        assert!(registry.known_peers.get(&peer_id).unwrap().contains(&addr2));
+    }
+
+    #[test]
+    fn test_bulk_load_avoids_duplicate_addresses() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+        // Manually add address
+        registry.known_peers.insert(peer_id, vec![addr.clone()]);
+
+        // Bulk load with same address
+        let mut peers = HashMap::new();
+        peers.insert(peer_id, vec![addr.clone()]);
+
+        registry.bulk_load_known_peers(peers);
+
+        // Should still have only one address (no duplicate)
+        assert_eq!(registry.known_peers.get(&peer_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_bulk_load_reconnection_counts_empty() {
+        let mut registry = PeerRegistry::new();
+        let counts = HashMap::new();
+
+        registry.bulk_load_reconnection_counts(counts);
+
+        assert_eq!(registry.reconnection_counts.len(), 0);
+    }
+
+    #[test]
+    fn test_bulk_load_reconnection_counts_single() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+
+        let mut counts = HashMap::new();
+        counts.insert(peer_id, 5);
+
+        registry.bulk_load_reconnection_counts(counts);
+
+        assert_eq!(registry.reconnection_counts.len(), 1);
+        assert_eq!(*registry.reconnection_counts.get(&peer_id).unwrap(), 5);
+    }
+
+    #[test]
+    fn test_bulk_load_reconnection_counts_skips_zero() {
+        let mut registry = PeerRegistry::new();
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        let peer3 = PeerId::random();
+
+        let mut counts = HashMap::new();
+        counts.insert(peer1, 3);
+        counts.insert(peer2, 10);
+        counts.insert(peer3, 0); // Should be skipped
+
+        registry.bulk_load_reconnection_counts(counts);
+
+        assert_eq!(registry.reconnection_counts.len(), 2);
+        assert_eq!(*registry.reconnection_counts.get(&peer1).unwrap(), 3);
+        assert_eq!(*registry.reconnection_counts.get(&peer2).unwrap(), 10);
+        assert!(!registry.reconnection_counts.contains_key(&peer3));
+    }
+
+    #[test]
+    fn test_bulk_load_uses_maximum_on_conflict() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+
+        // Manually set count to 5
+        registry.reconnection_counts.insert(peer_id, 5);
+
+        // Bulk load with higher count
+        let mut counts = HashMap::new();
+        counts.insert(peer_id, 10);
+
+        registry.bulk_load_reconnection_counts(counts);
+
+        // Should use the maximum (10)
+        assert_eq!(*registry.reconnection_counts.get(&peer_id).unwrap(), 10);
+    }
+
+    #[test]
+    fn test_bulk_loaded_peer_reconnection_tracking() {
+        let mut registry = PeerRegistry::new();
+        let peer_id = PeerId::random();
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+        // Bulk load known peer and reconnection count
+        let mut peers = HashMap::new();
+        peers.insert(peer_id, vec![addr.clone()]);
+        registry.bulk_load_known_peers(peers);
+
+        let mut counts = HashMap::new();
+        counts.insert(peer_id, 5);
+        registry.bulk_load_reconnection_counts(counts);
+
+        // Verify bulk loaded data
+        assert_eq!(registry.known_peers.len(), 1);
+        assert_eq!(*registry.reconnection_counts.get(&peer_id).unwrap(), 5);
+
+        // Now simulate a connection
+        registry.on_connection_established(
+            peer_id,
+            addr.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Dht,
+        );
+
+        // Reconnection count should have been incremented
+        assert_eq!(*registry.reconnection_counts.get(&peer_id).unwrap(), 6);
+
+        // Peer info should have the reconnection count
+        let peer_info = registry.get_peer(&peer_id).unwrap();
+        assert_eq!(peer_info.stats.reconnection_count, 6);
     }
 }

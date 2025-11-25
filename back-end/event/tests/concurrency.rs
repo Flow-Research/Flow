@@ -237,7 +237,6 @@ fn test_concurrent_read_write() {
 #[test]
 #[serial]
 fn test_validator_thread_safety() {
-    use event::EventValidator;
     use serde_json::json;
     use std::sync::Arc;
 

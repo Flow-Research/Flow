@@ -1,0 +1,277 @@
+# Flow API Module - REST and WebSocket Interfaces
+# Rules for API code
+
+## Module Purpose
+Exposes Flow's functionality via:
+- REST API (Axum) on port 8080 (default)
+- WebSocket API on port 8081 (default)
+- Clean JSON request/response formats
+- Integration with networking, storage, and business logic modules
+
+## API Design Principles
+
+### 1. Clear Separation of Concerns
+```
+api/
+├── node.rs          # Node struct - aggregates all services
+├── servers/
+│   ├── app_state.rs # Shared app state (Arc<RwLock<Node>>)
+│   ├── rest.rs      # REST server & routes (Axum)
+│   └── websocket.rs # WebSocket server (tokio-tungstenite)
+```
+
+### 2. Handler Pattern (REST)
+
+REQUIRED PATTERN:
+```rust
+use axum::{extract::State, Json};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+pub struct CreateSpaceRequest {
+    pub directory: String,
+}
+
+#[derive(Serialize)]
+pub struct CreateSpaceResponse {
+    pub key: String,
+    pub location: String,
+}
+
+pub async fn create_space_handler(
+    State(app_state): State<AppState>,
+    Json(payload): Json<CreateSpaceRequest>,
+) -> Result<Json<CreateSpaceResponse>, AppError> {
+    // 1. Validate input
+    if payload.directory.is_empty() {
+        return Err(AppError::InvalidInput("Directory required".to_string()));
+    }
+    
+    // 2. Get node (read lock)
+    let node = app_state.node.read().await;
+    
+    // 3. Call business logic
+    node.create_space(&payload.directory).await?;
+    
+    // 4. Return structured response
+    Ok(Json(CreateSpaceResponse {
+        key: space_key,
+        location: payload.directory,
+    }))
+}
+```
+
+### 3. Error Handling
+
+REST handlers must return `Result<Json<T>, AppError>`:
+- AppError automatically converts to HTTP responses
+- Always include error context
+- Return appropriate HTTP status codes
+
+```rust
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
+            AppError::Network(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+        };
+        
+        let body = Json(json!({ "error": message }));
+        (status, body).into_response()
+    }
+}
+```
+
+### 4. API Versioning
+
+All routes under `/api/v1/`:
+```rust
+let api_v1 = Router::new()
+    .route("/spaces", post(create_space_handler))
+    .route("/spaces/:key/query", post(query_space_handler))
+    .route("/webauthn/start_registration", get(start_registration))
+    // ... more routes
+    .with_state(app_state);
+
+let app = Router::new()
+    .nest("/api/v1", api_v1)
+    .layer(CorsLayer::permissive()) // Configure for production
+    .layer(TraceLayer::new_for_http());
+```
+
+### 5. WebSocket Pattern
+
+REQUIRED PATTERN:
+```rust
+pub async fn websocket_handler(
+    ws: WebSocketUpgrade,
+    State(app_state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_socket(socket, app_state))
+}
+
+async fn handle_socket(socket: WebSocket, app_state: AppState) {
+    let (mut sender, mut receiver) = socket.split();
+    
+    // Read loop
+    while let Some(Ok(msg)) = receiver.next().await {
+        match msg {
+            Message::Text(text) => {
+                // Parse JSON, dispatch to handlers
+                let response = handle_ws_message(&text, &app_state).await;
+                // Send response
+                sender.send(Message::Text(response)).await.ok();
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+}
+```
+
+### 6. Integration with Network Layer
+
+The Node struct aggregates NetworkManager:
+```rust
+pub struct Node {
+    pub network_manager: Arc<NetworkManager>,
+    pub db: DatabaseConnection,
+    pub kv: Arc<dyn KvStore>,
+    // ... other services
+}
+
+impl Node {
+    // Expose network operations through Node API
+    pub async fn peer_count(&self) -> Result<usize, AppError> {
+        self.network_manager.peer_count().await
+    }
+    
+    pub async fn connected_peers(&self) -> Result<Vec<PeerInfo>, AppError> {
+        self.network_manager.connected_peers().await
+    }
+    
+    // Future: Expose GossipSub publish/subscribe here
+}
+```
+
+### 7. Testing Requirements
+
+#### Unit Tests (Handler Logic)
+```rust
+#[tokio::test]
+async fn test_create_space_validation() {
+    let (app_state, _temp) = setup_test_app().await;
+    
+    let request = CreateSpaceRequest {
+        directory: String::new(), // Invalid
+    };
+    
+    let response = create_space_handler(
+        State(app_state),
+        Json(request),
+    ).await;
+    
+    assert!(response.is_err());
+    match response.unwrap_err() {
+        AppError::InvalidInput(_) => {} // Expected
+        _ => panic!("Wrong error type"),
+    }
+}
+```
+
+#### Integration Tests (Full HTTP)
+```rust
+#[tokio::test]
+async fn test_create_space_endpoint() {
+    let (app_state, temp_dir) = setup_test_app().await;
+    let app = build_router(app_state);
+    
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/spaces")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"directory":"/tmp/test"}"#))
+        .unwrap();
+    
+    let response = app.oneshot(request).await.unwrap();
+    
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    let result: CreateSpaceResponse = serde_json::from_slice(&body).unwrap();
+    assert!(!result.key.is_empty());
+}
+```
+
+### 8. Middleware & CORS
+
+Configure for development vs production:
+```rust
+let cors = CorsLayer::new()
+    .allow_origin(/* production: specific origins */)
+    .allow_methods([Method::GET, Method::POST, Method::DELETE])
+    .allow_headers([CONTENT_TYPE, AUTHORIZATION]);
+
+let app = Router::new()
+    .nest("/api/v1", api_v1)
+    .layer(cors)
+    .layer(TraceLayer::new_for_http()); // Request logging
+```
+
+### 9. Telemetry
+
+```rust
+// Log requests/responses
+#[instrument(skip(app_state), fields(directory = %payload.directory))]
+pub async fn create_space_handler(
+    State(app_state): State<AppState>,
+    Json(payload): Json<CreateSpaceRequest>,
+) -> Result<Json<CreateSpaceResponse>, AppError> {
+    info!("Creating space");
+    let result = node.create_space(&payload.directory).await?;
+    info!("Space created successfully");
+    Ok(Json(result))
+}
+```
+
+### 10. Future Network State Exposure
+
+When adding network state endpoints:
+```rust
+// GET /api/v1/network/peers
+pub async fn get_peers_handler(
+    State(app_state): State<AppState>,
+) -> Result<Json<Vec<PeerInfo>>, AppError> {
+    let node = app_state.node.read().await;
+    let peers = node.connected_peers().await?;
+    Ok(Json(peers))
+}
+
+// GET /api/v1/network/stats
+pub async fn get_network_stats_handler(
+    State(app_state): State<AppState>,
+) -> Result<Json<NetworkStats>, AppError> {
+    let node = app_state.node.read().await;
+    let stats = node.network_stats().await?;
+    Ok(Json(stats))
+}
+
+
+// WebSocket: Real-time network events
+// Send peer connection/disconnection events to subscribed clients
+```
+
+### 11. Code Review Checklist
+
+Before submitting API code:
+- [ ] Handlers return Result<Json<T>, AppError>
+- [ ] Input validation at API boundary
+- [ ] Structured request/response types (Deserialize/Serialize)
+- [ ] Routes under /api/v1/
+- [ ] CORS configured appropriately
+- [ ] Error responses include useful messages
+- [ ] Telemetry with tracing (not println!)
+- [ ] Tests for both success and error cases
+- [ ] Integration tests use full HTTP request/response cycle
+- [ ] AppState uses Arc<RwLock<Node>> for thread safety

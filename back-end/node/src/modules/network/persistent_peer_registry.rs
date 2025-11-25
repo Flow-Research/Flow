@@ -1,3 +1,5 @@
+use crate::modules::network::peer_registry::DiscoverySource;
+
 use super::peer_registry::{ConnectionDirection, NetworkStats, PeerInfo, PeerRegistry};
 use super::storage::peer_registry_store::PeerRegistryStore;
 use errors::AppError;
@@ -81,36 +83,26 @@ impl PersistentPeerRegistry {
         // Create in-memory registry
         let mut registry = PeerRegistry::new();
 
-        // Load persisted data
+        // Load persisted known peers
         match store.load_known_peers() {
             Ok(known_peers) => {
                 info!("Loaded {} known peers from disk", known_peers.len());
-                // Inject known peers into the registry
-                // Note: We'll need to add a method to PeerRegistry to bulk-load this data
-                for (peer_id, addresses) in known_peers {
-                    for addr in addresses {
-                        // Use a dummy connection/disconnection to populate known_peers
-                        // without making the peer "active"
-                        registry.on_connection_established(
-                            peer_id,
-                            addr.clone(),
-                            ConnectionDirection::Outbound,
-                        );
-                        registry.on_connection_closed(&peer_id);
-                    }
-                }
+                registry.bulk_load_known_peers(known_peers);
             }
-            Err(e) => warn!("Failed to load known peers: {}", e),
+            Err(e) => {
+                warn!("Failed to load known peers: {}", e);
+            }
         }
 
         // Load reconnection counts
         match store.load_reconnection_counts() {
             Ok(counts) => {
                 info!("Loaded {} reconnection counts from disk", counts.len());
-                // We'll need to add a method to inject this data
-                // For now, log it (will implement bulk_load method next)
+                registry.bulk_load_reconnection_counts(counts);
             }
-            Err(e) => warn!("Failed to load reconnection counts: {}", e),
+            Err(e) => {
+                warn!("Failed to load reconnection counts: {}", e);
+            }
         }
 
         let inner = Arc::new(RwLock::new(registry));
@@ -190,11 +182,17 @@ impl PersistentPeerRegistry {
         peer_id: PeerId,
         address: Multiaddr,
         direction: ConnectionDirection,
+        discovery_source: DiscoverySource,
     ) {
         // Update in-memory registry
         {
             let mut registry = self.inner.write().unwrap();
-            registry.on_connection_established(peer_id, address.clone(), direction);
+            registry.on_connection_established(
+                peer_id,
+                address.clone(),
+                direction,
+                discovery_source,
+            );
         }
 
         // Persist to database
@@ -505,7 +503,12 @@ mod tests {
         registry.start_background_flush();
 
         // Add a peer
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         // Wait for at least one flush interval
         sleep(Duration::from_secs(2)).await;
@@ -543,7 +546,12 @@ mod tests {
         let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
 
         // Don't start background flush - test explicit shutdown flush
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         // Shutdown should flush
         registry.shutdown().await.unwrap();
@@ -576,7 +584,12 @@ mod tests {
         let (peer_id, address) = create_test_peer(1);
 
         let registry = PersistentPeerRegistry::new(config).unwrap();
-        registry.on_connection_established(peer_id, address.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         assert_eq!(registry.peer_count(), 1);
 
@@ -596,7 +609,12 @@ mod tests {
         // Create registry and add peer
         {
             let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
             registry.flush().unwrap(); // Ensure data is written
             // Drop registry here to close the database
         }
@@ -621,7 +639,12 @@ mod tests {
 
         for i in 1..=5 {
             let (peer_id, address) = create_test_peer(i);
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
         }
 
         assert_eq!(registry.peer_count(), 5);
@@ -638,11 +661,21 @@ mod tests {
         let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
 
         // First connection
-        registry.on_connection_established(peer_id, address.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
         registry.on_connection_closed(&peer_id);
 
         // Second connection (reconnection)
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();
         assert_eq!(peer_info.stats.reconnection_count, 1);
@@ -665,7 +698,12 @@ mod tests {
 
         {
             let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
 
             assert_eq!(registry.peer_count(), 1);
 
@@ -696,6 +734,7 @@ mod tests {
                 peer_id,
                 address.clone(),
                 ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
             );
             registry.on_connection_closed(&peer_id);
 
@@ -769,7 +808,12 @@ mod tests {
         let (peer_id, address) = create_test_peer(1);
 
         let registry = PersistentPeerRegistry::new(config).unwrap();
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         let peer_info = registry.get_peer(&peer_id);
         assert!(peer_info.is_some());
@@ -795,7 +839,12 @@ mod tests {
         let mut expected_peers = vec![];
         for i in 1..=3 {
             let (peer_id, address) = create_test_peer(i);
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
             expected_peers.push(peer_id);
         }
 
@@ -816,11 +865,21 @@ mod tests {
         assert_eq!(registry.peer_count(), 0);
 
         let (peer_id1, address1) = create_test_peer(1);
-        registry.on_connection_established(peer_id1, address1, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id1,
+            address1,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
         assert_eq!(registry.peer_count(), 1);
 
         let (peer_id2, address2) = create_test_peer(2);
-        registry.on_connection_established(peer_id2, address2, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id2,
+            address2,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
         assert_eq!(registry.peer_count(), 2);
 
         registry.on_connection_closed(&peer_id1);
@@ -847,7 +906,12 @@ mod tests {
         let (peer_id, address) = create_test_peer(1);
 
         let registry = PersistentPeerRegistry::new(config).unwrap();
-        registry.on_connection_established(peer_id, address.clone(), ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address.clone(),
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
         registry.on_connection_closed(&peer_id);
 
         let known = registry.get_known_addresses(&peer_id);
@@ -869,7 +933,12 @@ mod tests {
         assert_eq!(stats.total_connection_failures, 0);
 
         let (peer_id, address) = create_test_peer(1);
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         let stats = registry.stats();
         assert_eq!(stats.connected_peers, 1);
@@ -886,7 +955,12 @@ mod tests {
         let (peer_id, address) = create_test_peer(1);
 
         let registry = PersistentPeerRegistry::new(config).unwrap();
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         let before = registry.get_peer(&peer_id).unwrap().last_seen;
 
@@ -921,7 +995,12 @@ mod tests {
         let (peer_id, address) = create_test_peer(1);
 
         let registry = PersistentPeerRegistry::new(config).unwrap();
-        registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+        registry.on_connection_established(
+            peer_id,
+            address,
+            ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
+        );
 
         let result = registry.flush();
         assert!(result.is_ok());
@@ -937,7 +1016,12 @@ mod tests {
 
         {
             let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
             // Drop happens here
         }
 
@@ -977,6 +1061,7 @@ mod tests {
                 peer_id,
                 address.clone(),
                 ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
             );
             registry.flush().unwrap();
         }
@@ -1007,6 +1092,7 @@ mod tests {
                     peer_id,
                     address.clone(),
                     ConnectionDirection::Outbound,
+                    DiscoverySource::Unknown,
                 );
                 registry.on_connection_closed(&peer_id);
             }
@@ -1017,7 +1103,12 @@ mod tests {
         // Verify reconnection count persisted
         {
             let registry = PersistentPeerRegistry::new(config.clone()).unwrap();
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
 
             let peer_info = registry.get_peer(&peer_id).unwrap();
             // Should have reconnection count from previous session
@@ -1043,6 +1134,7 @@ mod tests {
                     peer_id,
                     address,
                     ConnectionDirection::Outbound,
+                    DiscoverySource::Unknown,
                 );
             });
             handles.push(handle);
@@ -1065,7 +1157,12 @@ mod tests {
         // Pre-populate
         for i in 1..=3 {
             let (peer_id, address) = create_test_peer(i);
-            registry.on_connection_established(peer_id, address, ConnectionDirection::Outbound);
+            registry.on_connection_established(
+                peer_id,
+                address,
+                ConnectionDirection::Outbound,
+                DiscoverySource::Unknown,
+            );
         }
 
         let mut handles = vec![];
@@ -1092,6 +1189,7 @@ mod tests {
                     peer_id,
                     address,
                     ConnectionDirection::Outbound,
+                    DiscoverySource::Unknown,
                 );
                 sleep(Duration::from_millis(10)).await;
                 registry_clone.on_connection_closed(&peer_id);
@@ -1125,11 +1223,13 @@ mod tests {
             peer_id,
             address1.clone(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
         );
         registry.on_connection_established(
             peer_id,
             address2.clone(),
             ConnectionDirection::Outbound,
+            DiscoverySource::Unknown,
         );
 
         let peer_info = registry.get_peer(&peer_id).unwrap();

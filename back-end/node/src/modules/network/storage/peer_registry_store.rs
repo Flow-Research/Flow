@@ -1,4 +1,6 @@
-use crate::modules::network::peer_registry::{ConnectionDirection, ConnectionStats, PeerInfo};
+use crate::modules::network::peer_registry::{
+    ConnectionDirection, ConnectionStats, DiscoverySource, PeerInfo,
+};
 use errors::AppError;
 use libp2p::{Multiaddr, PeerId};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -26,6 +28,8 @@ struct SerializablePeerInfo {
     connection_count: usize,
     stats: ConnectionStats,
     connection_direction: ConnectionDirection,
+    #[serde(default)]
+    discovery_source: DiscoverySource,
 }
 
 impl SerializablePeerInfo {
@@ -38,6 +42,7 @@ impl SerializablePeerInfo {
             connection_count: info.connection_count,
             stats: info.stats.clone(),
             connection_direction: info.connection_direction,
+            discovery_source: info.discovery_source,
         }
     }
 
@@ -83,6 +88,7 @@ impl SerializablePeerInfo {
             connection_count: self.connection_count,
             stats: self.stats.clone(),
             connection_direction: self.connection_direction,
+            discovery_source: self.discovery_source,
         })
     }
 }
@@ -357,6 +363,7 @@ mod tests {
                 avg_latency_ms: Some(50.0),
             },
             connection_direction: ConnectionDirection::Outbound,
+            discovery_source: DiscoverySource::Unknown,
         }
     }
 
@@ -408,6 +415,7 @@ mod tests {
                 avg_latency_ms: None,
             },
             connection_direction: ConnectionDirection::Inbound,
+            discovery_source: DiscoverySource::Dht,
         };
 
         assert!(serializable.to_peer_info().is_err());
@@ -429,6 +437,7 @@ mod tests {
                 avg_latency_ms: None,
             },
             connection_direction: ConnectionDirection::Inbound,
+            discovery_source: DiscoverySource::Dht,
         };
 
         assert!(serializable.to_peer_info().is_err());
@@ -452,6 +461,7 @@ mod tests {
                 avg_latency_ms: Some(25.0),
             },
             connection_direction: ConnectionDirection::Inbound,
+            discovery_source: DiscoverySource::Dht,
         };
 
         // Should handle future timestamps gracefully

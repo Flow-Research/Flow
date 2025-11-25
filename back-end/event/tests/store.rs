@@ -1,6 +1,5 @@
 use event::{
-    types::{DottedVersionVector, EventPayload},
-    EventStoreConfig, EventValidator, RocksDbEventStore, SignedPayload,
+    types::EventPayload, EventStoreConfig, EventValidator, RocksDbEventStore, SignedPayload,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;

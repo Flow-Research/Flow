@@ -1,0 +1,437 @@
+# Flow Backend - Rust Workspace Rules
+# Workspace-level guidance for all backend crates
+
+## Workspace Overview
+
+Flow's backend is a Rust workspace containing:
+
+### Core Crates
+- **node/** - Main application server (REST/WebSocket APIs, networking, storage)
+- **event/** - Event sourcing system with RocksDB persistence
+- **entity/** - SeaORM database entities (PostgreSQL)
+- **errors/** - Centralized error types (`AppError`)
+- **migration/** - SeaORM database migrations
+
+### Architecture Layers
+1. **Network Layer** (node/modules/network) - libp2p P2P networking
+2. **Storage Layer** (node/modules/storage, event/) - RocksDB + PostgreSQL
+3. **API Layer** (node/api) - REST (Axum) + WebSocket
+4. **Business Logic** (node/modules) - AI pipelines, SSI, spaces
+5. **Data Layer** (entity, migration) - Database schemas
+
+## Workspace-Wide Standards
+
+### 1. Error Handling
+
+ALL crates use `errors::AppError`:
+
+```rust
+use errors::AppError;
+
+// REQUIRED: Return AppError with context
+pub fn operation() -> Result<Data, AppError> {
+    do_something()
+        .map_err(|e| AppError::Network(format!("Failed: {}", e)))?;
+    Ok(data)
+}
+
+// FORBIDDEN
+pub fn bad() -> Result<Data, Box<dyn Error>> { /* ... */ } // ❌
+pub fn bad() -> Data { /* ... */ } // ❌ No error handling
+```
+
+**AppError Variants** (from `errors/src/lib.rs`):
+- `Network(String)` - Networking failures
+- `Storage(Box<dyn Error + Send + Sync>)` - RocksDB/KV errors
+- `Database(DbErr)` - PostgreSQL/SeaORM errors
+- `NotFound(String)` - Resource not found
+- `InvalidInput(String)` - Validation failures
+- `Unauthorized(String)` - Auth failures
+- `Internal(String)` - Internal server errors
+
+### 2. Async Runtime
+
+**Tokio everywhere**:
+```rust
+// REQUIRED
+#[tokio::main]
+async fn main() { /* ... */ }
+
+#[tokio::test]
+async fn test_async() { /* ... */ }
+
+tokio::spawn(async move { /* ... */ });
+tokio::time::sleep(Duration::from_secs(1)).await;
+
+// FORBIDDEN
+std::thread::sleep(Duration::from_secs(1)); // ❌ Blocks executor
+```
+
+### 3. Logging & Telemetry
+
+**Use `tracing` crate** (not `println!`):
+
+```rust
+use tracing::{info, warn, error, debug, instrument};
+
+#[instrument(skip(data), fields(id = %entity_id))]
+pub async fn process(entity_id: &str, data: Vec<u8>) -> Result<(), AppError> {
+    info!("Processing started");
+    debug!(bytes = data.len(), "Data size");
+    
+    match risky_operation().await {
+        Ok(_) => info!("Processing complete"),
+        Err(e) => {
+            error!(error = %e, "Processing failed");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+// FORBIDDEN
+println!("Processing started"); // ❌
+eprintln!("Error: {}", e); // ❌
+```
+
+**Logging Levels**:
+- `info!` - Lifecycle events (start/stop), major operations
+- `debug!` - Detailed operation info, useful for debugging
+- `warn!` - Recoverable issues, degraded behavior
+- `error!` - Operation failures, exceptions
+
+### 4. Thread Safety
+
+**Shared state patterns**:
+
+```rust
+use std::sync::Arc;
+use tokio::sync::{RwLock, Mutex, mpsc};
+
+// Read-heavy shared state
+let state = Arc::new(RwLock::new(State::new()));
+let read_guard = state.read().await;
+
+// Write-heavy or simple shared state
+let counter = Arc::new(Mutex::new(0));
+let mut guard = counter.lock().await;
+
+// Message passing (preferred for task coordination)
+let (tx, mut rx) = mpsc::unbounded_channel();
+tokio::spawn(async move {
+    while let Some(msg) = rx.recv().await {
+        handle(msg).await;
+    }
+});
+```
+
+### 5. Storage Standards
+
+#### RocksDB (Primary KV Store)
+- **Usage**: DHT persistence, peer registry, event store, general KV
+- **Pattern**: Column families for logical separation
+- **Testing**: Always use `tempfile::TempDir` for isolation
+- **Shutdown**: Always flush on graceful shutdown
+
+```rust
+use rocksdb::{DB, Options, ColumnFamilyDescriptor};
+use tempfile::TempDir;
+
+// Production
+let cfs = vec![
+    ColumnFamilyDescriptor::new("cf_name", Options::default()),
+];
+let db = Arc::new(DB::open_cf_descriptors(&opts, path, cfs)?);
+
+// Tests
+#[test]
+fn test_storage() {
+    let temp = TempDir::new().unwrap();
+    let store = create_store(temp.path()).unwrap();
+    // Test logic
+    // temp auto-cleaned on drop
+}
+```
+
+#### PostgreSQL (Relational Data)
+- **Usage**: Users, spaces, passkeys, indexing status
+- **ORM**: SeaORM
+- **Migrations**: `migration/` crate using SeaORM migrations
+- **Entities**: `entity/` crate with SeaORM models
+
+```rust
+use sea_orm::{Database, DatabaseConnection, EntityTrait};
+use entity::user;
+
+let db: DatabaseConnection = Database::connect(&db_url).await?;
+
+let users = user::Entity::find()
+    .filter(user::Column::Email.contains("@example.com"))
+    .all(&db)
+    .await?;
+```
+
+### 6. Testing Requirements
+
+#### Coverage Target
+- **Critical paths**: >80% coverage
+- **Networking**: Multi-node integration tests
+- **Storage**: Concurrent access tests
+- **API**: Full request/response cycle tests
+
+#### Test Organization
+```
+tests/
+├── api/           # API integration tests
+├── bootstrap/     # Config/init tests
+├── modules/       # Module-specific tests
+└── util/          # Test helpers
+```
+
+#### Test Patterns
+
+**Unit Tests** (in same file as code):
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_sync_logic() { /* ... */ }
+    
+    #[tokio::test]
+    async fn test_async_logic() { /* ... */ }
+}
+```
+
+**Integration Tests** (in `tests/`):
+```rust
+use tempfile::TempDir;
+
+#[tokio::test]
+async fn test_full_flow() {
+    let temp = TempDir::new().unwrap();
+    
+    // Setup
+    let node = setup_test_node(&temp).await;
+    
+    // Execute
+    let result = node.operation().await;
+    
+    // Verify
+    assert!(result.is_ok());
+}
+```
+
+**Environment Variable Tests**:
+```rust
+use serial_test::serial;
+
+#[test]
+#[serial]
+fn test_config_from_env() {
+    unsafe {
+        std::env::set_var("KEY", "value");
+    }
+    
+    let config = Config::from_env();
+    
+    unsafe {
+        std::env::remove_var("KEY");
+    }
+    
+    assert_eq!(config.key, "value");
+}
+```
+
+### 7. Crate-Specific Guidance
+
+#### node/ (Main Application)
+- **Entry point**: `main.rs` → `runner.rs` → API servers + network
+- **Config**: Environment-based via `bootstrap/config.rs`
+- **Lifecycle**: Clear startup → run → graceful shutdown
+- **Modularity**: Clean separation between modules (network, ai, ssi, space, storage)
+
+#### event/ (Event Sourcing)
+- **Core pattern**: Append-only event log with causality tracking
+- **Storage**: RocksDB with column families (metadata, events, index, subscription_state)
+- **Concurrency**: Mutex-protected append for atomicity
+- **Downstream**: Dispatcher + PersistentSubscription for event processing
+- **Testing**: Concurrency tests, hash chain verification, DVV causality
+
+#### entity/ (Database Models)
+- **ORM**: SeaORM entities
+- **Convention**: One file per entity (user.rs, space.rs, etc.)
+- **Prelude**: `use entity::prelude::*;` for common imports
+- **Relations**: Use SeaORM relations (one-to-many, many-to-many)
+
+#### migration/ (Database Schema)
+- **Tool**: SeaORM migrations
+- **Naming**: `m{YYYYMMDD}_{HHMMSS}_{description}.rs`
+- **Direction**: Implement `up()` and `down()`
+- **Testing**: Run migrations in CI
+
+#### errors/ (Error Types)
+- **Central enum**: `AppError` with variants for each layer
+- **Conversion**: Implement `From<T>` for external error types
+- **Context**: Always include context in error messages
+- **HTTP**: `IntoResponse` implementation for REST API
+
+### 8. Dependency Management
+
+#### Core Dependencies
+- `tokio` - Async runtime (with `full` features)
+- `tracing`, `tracing-subscriber` - Structured logging
+- `serde`, `serde_json` - Serialization
+- `libp2p` - P2P networking
+- `rocksdb` - Persistent KV storage
+- `sea-orm` - PostgreSQL ORM
+- `axum` - REST API framework
+- `tokio-tungstenite` - WebSocket
+
+#### Add Dependencies Carefully
+- Prefer crates with active maintenance
+- Check for `no_std` compatibility if needed
+- Avoid duplicate functionality (don't add `env_logger` if using `tracing`)
+- Consider binary size impact
+
+### 9. Code Review Checklist
+
+Before submitting code:
+
+**Functionality**
+- [ ] Implements requested feature completely
+- [ ] Handles error cases gracefully
+- [ ] Includes comprehensive tests (unit + integration)
+- [ ] Tests use `tempfile` for filesystem isolation
+
+**Code Quality**
+- [ ] Uses `AppError` for all error returns
+- [ ] Uses `tracing` for all logging (no `println!`)
+- [ ] Async code doesn't block (no `std::thread::sleep`)
+- [ ] Shared state is thread-safe (Arc + RwLock/Mutex)
+- [ ] No `unwrap()` without justification
+
+**Documentation**
+- [ ] Public APIs have doc comments (`///`)
+- [ ] Complex logic has inline comments
+- [ ] Breaking changes documented in CHANGELOG.md
+- [ ] README updated if user-facing
+
+**Architecture**
+- [ ] Fits existing module boundaries
+- [ ] Doesn't duplicate existing functionality
+- [ ] Follows workspace conventions
+- [ ] Compatible with future features
+
+### 10. Common Anti-Patterns
+
+❌ **DON'T**:
+- Use `unwrap()` in production code without justification
+- Block async executor with `std::thread::sleep`
+- Use `println!`/`eprintln!` instead of `tracing`
+- Share mutable state without synchronization
+- Spawn background tasks without tracking handles
+- Open RocksDB from multiple processes
+- Forget to flush RocksDB on shutdown
+- Use generic `Box<dyn Error>` instead of `AppError`
+- Write tests that depend on each other
+- Hardcode file paths or ports
+
+✅ **DO**:
+- Return `Result<T, AppError>` with context
+- Use `tokio::time::sleep` in async
+- Use structured logging with `tracing`
+- Wrap shared state in `Arc<RwLock<>>` or `Arc<Mutex<>>`
+- Track all spawned tasks with `JoinHandle`
+- Use `tempfile::TempDir` in tests
+- Implement graceful shutdown with RocksDB flush
+- Convert external errors to `AppError` with context
+- Isolate tests with unique resources
+- Use environment variables for configuration
+
+### 11. Performance Considerations
+
+- **Profile before optimizing** - Use `cargo flamegraph`
+- **Async vs sync** - Use async for I/O, sync for CPU-bound
+- **Allocations** - Minimize in hot paths, use `Vec::with_capacity`
+- **Cloning** - Prefer `Arc::clone(&x)` for shared ownership
+- **Database queries** - Use indexes, batch operations
+- **RocksDB** - Tune bloom filters, compression, write buffers
+
+### 12. Security Principles
+
+- **Input validation** - Validate all external input at boundaries
+- **Path traversal** - Use `canonicalize()` for file paths
+- **Secrets** - Never in code/logs, always environment variables
+- **Rate limiting** - On all public APIs
+- **Authentication** - Check permissions before operations
+- **Encryption** - Use Noise protocol for P2P, TLS for HTTP
+
+### 13. Build & CI
+
+```bash
+# Build entire workspace
+cargo build --workspace
+
+# Test entire workspace
+cargo test --workspace
+
+# Format check
+cargo fmt --check
+
+# Lint
+cargo clippy --workspace -- -D warnings
+
+# Check specific crate
+cargo check -p node
+cargo test -p event
+```
+
+### 14. Migration from Sled to RocksDB
+
+**Completed**:
+- ✅ DHT store (network module)
+- ✅ Peer registry (network module)
+- ✅ Event store (event crate)
+- ✅ General KV store (node/modules/storage)
+
+**Pattern**:
+- Column families for logical separation
+- Flush on shutdown
+- `tempfile` in tests
+- Error conversion to `AppError::Storage`
+
+---
+
+## Quick Reference
+
+### File Structure
+```
+back-end/
+├── node/           # Main application
+│   ├── src/
+│   │   ├── api/           # REST/WebSocket
+│   │   ├── bootstrap/     # Config/init
+│   │   ├── modules/       # Business logic
+│   │   │   ├── ai/        # AI pipelines
+│   │   │   ├── network/   # P2P networking
+│   │   │   ├── space/     # Space management
+│   │   │   ├── ssi/       # SSI/DID/WebAuthn
+│   │   │   └── storage/   # KV store
+│   │   ├── runner.rs      # App orchestration
+│   │   └── main.rs        # Entry point
+│   └── tests/             # Integration tests
+├── event/          # Event sourcing
+├── entity/         # Database models
+├── errors/         # Error types
+└── migration/      # DB migrations
+```
+
+### Key Commands
+```bash
+cargo run -p node                    # Run main app
+cargo test -p event                  # Test event crate
+cargo test --workspace              # Test all
+DATABASE_URL=... cargo run -p migration up  # Run migrations
+```

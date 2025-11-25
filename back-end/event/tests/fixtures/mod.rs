@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use event::{EventPayload, EventValidator};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
