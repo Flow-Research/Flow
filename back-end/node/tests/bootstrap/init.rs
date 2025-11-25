@@ -1,30 +1,108 @@
 use axum::Router;
 use chrono::{DateTime, Utc};
 use errors::AppError;
+use migration::{Migrator, MigratorTrait};
+use node::api::node::Node;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
+use node::bootstrap::init::NodeData;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use node::modules::ai::config::IndexingConfig;
 use node::modules::ai::pipeline_manager::PipelineManager;
 use node::modules::network::manager::NetworkManager;
+use node::modules::ssi::webauthn::state::AuthState;
 use node::modules::storage::{KvConfig, RocksDbKvStore};
+use once_cell::sync::Lazy;
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
+use tempfile::TempDir;
 use tracing::info;
 
-use migration::{Migrator, MigratorTrait};
-use node::api::node::Node;
-use node::bootstrap::init::NodeData;
-use node::modules::ssi::webauthn::state::AuthState;
-use sea_orm::{ConnectOptions, Database, DatabaseConnection};
-use tempfile::TempDir;
+// Global mutex to serialize NetworkManager creation (env vars are process-global)
+pub static NETWORK_MANAGER_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// Test server container with access to all components
 pub struct TestServer {
     pub router: Router,
     pub node: Node,
     pub temp: TempDir,
+}
+
+pub fn create_test_node_data() -> NodeData {
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    NodeData {
+        id: format!("did:key:test-{}", rand::random::<u32>()),
+        private_key: signing_key.to_bytes().to_vec(),
+        public_key: verifying_key.to_bytes().to_vec(),
+    }
+}
+
+/// Create test node data with custom device ID
+fn create_test_node_data_with_device_id(device_id: &str) -> NodeData {
+    NodeData {
+        id: device_id.to_string(),
+        private_key: vec![0u8; 32],
+        public_key: vec![0u8; 32],
+    }
+}
+
+/// Setup test environment with auto-generated unique name
+pub fn setup_test_env_auto(temp_dir: &TempDir) {
+    let random_suffix = RandomState::new().build_hasher().finish().to_string();
+    setup_test_env(temp_dir, &random_suffix);
+}
+
+pub fn setup_test_env(temp_dir: &TempDir, test_name: &str) {
+    unsafe {
+        std::env::set_var(
+            "DHT_DB_PATH",
+            temp_dir.path().join(format!("{}_dht", test_name)),
+        );
+        std::env::set_var(
+            "PEER_REGISTRY_DB_PATH",
+            temp_dir.path().join(format!("{}_registry", test_name)),
+        );
+        std::env::set_var(
+            "GOSSIP_MESSAGE_DB_PATH",
+            temp_dir.path().join(format!("{}_gossip", test_name)),
+        );
+    }
+}
+
+pub fn set_env(key: &str, value: &str) {
+    unsafe {
+        std::env::set_var(key, value);
+    }
+}
+
+pub fn set_envs(envs: &Vec<(&str, &str)>) {
+    for env in envs {
+        unsafe {
+            std::env::set_var(env.0, env.1);
+        }
+    }
+}
+
+pub fn remove_env(key: &str) {
+    unsafe {
+        std::env::remove_var(key);
+    }
+}
+
+/// Remove multiple environment variables
+pub fn remove_envs(keys: &[&str]) {
+    for key in keys {
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
 }
 
 /// Setup a test server with app state
@@ -109,15 +187,6 @@ fn setup_test_auth_state() -> AuthState {
     AuthState::new(auth_config).unwrap()
 }
 
-/// Create test node data with custom device ID
-fn create_test_node_data(device_id: &str) -> NodeData {
-    NodeData {
-        id: device_id.to_string(),
-        private_key: vec![0u8; 32],
-        public_key: vec![0u8; 32],
-    }
-}
-
 /// Setup test pipeline manager
 fn setup_test_pipeline_manager(db: DatabaseConnection) -> Result<PipelineManager, AppError> {
     let indexing_config = IndexingConfig::from_env()
@@ -129,7 +198,15 @@ fn setup_test_pipeline_manager(db: DatabaseConnection) -> Result<PipelineManager
 /// Setup test network manager
 async fn setup_test_network_manager(
     node_data: &NodeData,
+    temp_dir: &TempDir,
 ) -> Result<Arc<NetworkManager>, Box<dyn std::error::Error>> {
+    // Hold the lock across env var setting AND NetworkManager creation
+    // This prevents parallel tests from overwriting each other's env vars
+    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+
+    // Set environment variables for this test's unique paths
+    setup_test_env_auto(temp_dir);
+
     let network_manager = NetworkManager::new(node_data).await?;
     Ok(Arc::new(network_manager))
 }
@@ -142,9 +219,11 @@ pub async fn setup_test_node_with_device_id(device_id: &str) -> (Node, TempDir) 
     let db = setup_test_database(&temp_dir).await;
     let kv = setup_test_kv_store(&temp_dir).unwrap();
     let auth_state = setup_test_auth_state();
-    let node_data = create_test_node_data(device_id);
+    let node_data = create_test_node_data_with_device_id(device_id);
     let pipeline_manager = setup_test_pipeline_manager(db.clone()).unwrap();
-    let network_manager = setup_test_network_manager(&node_data).await.unwrap();
+    let network_manager = setup_test_network_manager(&node_data, &temp_dir)
+        .await
+        .unwrap();
 
     // Create and return the node
     let node = Node::new(
@@ -185,9 +264,12 @@ pub async fn create_test_node_with_db(
     // Setup all components using existing helpers
     let kv = setup_kv_from_path(kv_path).unwrap();
     let auth_state = setup_test_auth_state();
-    let node_data = create_test_node_data(device_id);
+    let node_data = create_test_node_data_with_device_id(device_id);
     let pipeline_manager = setup_test_pipeline_manager(db.clone()).unwrap();
-    let network_manager = setup_test_network_manager(&node_data).await.unwrap();
+    let network_temp = TempDir::new().unwrap();
+    let network_manager = setup_test_network_manager(&node_data, &network_temp)
+        .await
+        .unwrap();
 
     // Create and return the node
     Node::new(

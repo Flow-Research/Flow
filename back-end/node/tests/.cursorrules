@@ -190,16 +190,15 @@ use serial_test::serial;
 #[test]
 #[serial]
 fn test_config_from_env() {
-    unsafe {
-        env::set_var("KEY", "value");
-    }
+    crate::bootstrap::init::set_envs(&vec![
+        ("key1", "value1"),
+        ("key2", "value2"),
+    ]);
     
     let config = Config::from_env().unwrap();
     assert_eq!(config.key, "value");
     
-    unsafe {
-        env::remove_var("KEY");
-    }
+    crate::bootstrap::init::remove_envs(&["key1", "key2"]);
 }
 ```
 

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     bootstrap::init::{
-        setup_test_db, setup_test_multi_node, setup_test_node, setup_test_node_with_device_id,
+        setup_test_db, setup_test_env_auto, setup_test_multi_node, setup_test_node,
+        setup_test_node_with_device_id,
     },
     modules::ssi::fixtures::load_es256_passkey,
 };
@@ -16,6 +17,7 @@ use node::{
 };
 use node::{bootstrap::init::NodeData, modules::network::manager::NetworkManager};
 use sea_orm::{ColumnTrait, Database, QueryFilter};
+use serial_test::serial;
 use tempfile::TempDir;
 use tracing::info;
 use webauthn_authenticator_rs::{AuthenticatorBackend, softpasskey::SoftPasskey};
@@ -145,6 +147,7 @@ async fn test_start_registration_challenge_is_unique() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_start_registration_with_multiple_devices() {
     let (db, temp_dir) = setup_test_multi_node().await;
 
@@ -181,6 +184,8 @@ async fn test_start_registration_with_multiple_devices() {
         .unwrap();
     let pipeline_manager = PipelineManager::new(db.clone(), indexing_config);
 
+    setup_test_env_auto(&temp_dir);
+
     let node_data_1 = NodeData {
         id: "device-1".to_string(),
         private_key: vec![0u8; 32],
@@ -198,6 +203,8 @@ async fn test_start_registration_with_multiple_devices() {
         pipeline_manager.clone(),
         network_manager_1,
     );
+
+    setup_test_env_auto(&temp_dir);
 
     let node_data_2 = NodeData {
         id: "device-2".to_string(),
@@ -234,6 +241,7 @@ async fn test_start_registration_with_multiple_devices() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_end_to_end_registration_and_authentication() {
     // Setup test node
     let temp_dir = TempDir::new().unwrap();

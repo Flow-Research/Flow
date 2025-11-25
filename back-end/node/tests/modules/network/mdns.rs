@@ -1,6 +1,3 @@
-//! Integration tests for mDNS local discovery
-
-use node::bootstrap::init::NodeData;
 use node::modules::network::config::{
     BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
 };
@@ -11,6 +8,8 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+use crate::bootstrap::init::{NETWORK_MANAGER_LOCK, create_test_node_data, setup_test_env_auto};
+
 // Helper to create unique test configs
 pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
     NetworkConfig {
@@ -20,7 +19,7 @@ pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfi
         mdns: MdnsConfig {
             enabled: mdns_enabled,
             service_name: "_flow-p2p._udp.local".to_string(),
-            query_interval_secs: 5, // Faster for tests
+            query_interval_secs: 5,
         },
         connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig::default(),
@@ -28,32 +27,11 @@ pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfi
     }
 }
 
-fn create_test_node_data() -> NodeData {
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
-    let verifying_key = signing_key.verifying_key();
-
-    NodeData {
-        id: format!("did:key:test-{}", rand::random::<u32>()),
-        private_key: signing_key.to_bytes().to_vec(),
-        public_key: verifying_key.to_bytes().to_vec(),
-    }
-}
-
-fn setup_test_env(temp_dir: &TempDir) {
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir.path().join("node1_dht"));
-        std::env::set_var(
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir.path().join("node1_registry"),
-        );
-    }
-}
-
 #[tokio::test]
 #[serial]
 async fn test_mdns_disabled_mode() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    setup_test_env(&temp_dir);
+    setup_test_env_auto(&temp_dir);
 
     let node_data = create_test_node_data();
     let config = create_test_network_config(0, false);
@@ -78,7 +56,7 @@ async fn test_mdns_disabled_mode() {
 #[serial]
 async fn test_mdns_enabled_single_node() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    setup_test_env(&temp_dir);
+    setup_test_env_auto(&temp_dir);
 
     let node_data = create_test_node_data();
     let config = create_test_network_config(0, true);
@@ -101,14 +79,14 @@ async fn test_mdns_enabled_single_node() {
 #[tokio::test]
 #[serial]
 async fn test_mdns_two_nodes_discover_each_other() {
+    // Acquire the global mutex before setting env vars and creating NetworkManager
+    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+
     let temp_dir1 = TempDir::new().expect("Failed to create temp dir 1");
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
 
     // Setup node 1
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir1.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir1.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir1);
 
     let node_data1 = create_test_node_data();
     let config1 = create_test_network_config(0, true);
@@ -117,14 +95,16 @@ async fn test_mdns_two_nodes_discover_each_other() {
     manager1.start(&config1).await.unwrap();
     let peer_id1 = manager1.local_peer_id();
 
+    // Release lock before the next manager by scoping or dropping guard
+    drop(_guard);
+
     // Wait for node 1 to start advertising
     sleep(Duration::from_secs(1)).await;
 
+    let _guard2 = NETWORK_MANAGER_LOCK.lock().unwrap();
+
     // Setup node 2
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir2.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir2.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir2);
 
     let node_data2 = create_test_node_data();
     let config2 = create_test_network_config(0, true);
@@ -132,6 +112,8 @@ async fn test_mdns_two_nodes_discover_each_other() {
     let manager2 = NetworkManager::new(&node_data2).await.unwrap();
     manager2.start(&config2).await.unwrap();
     let peer_id2 = manager2.local_peer_id();
+
+    drop(_guard2);
 
     // Poll with retries instead of fixed sleep
     let max_attempts = 20;
@@ -181,27 +163,27 @@ async fn test_mdns_two_nodes_discover_each_other() {
 #[tokio::test]
 #[serial]
 async fn test_mdns_discovered_peers_stored_in_database() {
+    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+
     let temp_dir1 = TempDir::new().expect("Failed to create temp dir 1");
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
 
     // Setup and start node 1
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir1.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir1.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir1);
 
     let node_data1 = create_test_node_data();
     let config1 = create_test_network_config(0, true);
     let manager1 = NetworkManager::new(&node_data1).await.unwrap();
     manager1.start(&config1).await.unwrap();
 
+    drop(_guard);
+
     sleep(Duration::from_secs(1)).await;
 
+    let _guard2 = NETWORK_MANAGER_LOCK.lock().unwrap();
+
     // Setup and start node 2
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir2.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir2.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir2);
 
     let node_data2 = create_test_node_data();
     let config2 = create_test_network_config(0, true);
@@ -209,21 +191,25 @@ async fn test_mdns_discovered_peers_stored_in_database() {
     manager2.start(&config2).await.unwrap();
     let _peer_id2 = manager2.local_peer_id();
 
+    drop(_guard2);
+
     // Wait for discovery
     sleep(Duration::from_secs(10)).await;
 
     // Stop node 1 to force flush to database
     manager1.stop().await.unwrap();
+    drop(manager1);
+
+    let _guard3 = NETWORK_MANAGER_LOCK.lock().unwrap();
 
     // Reset environment variables to temp_dir1's paths before restarting
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir1.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir1.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir1);
 
     // Restart node 1 and verify peer is loaded from database
     let manager1_restarted = NetworkManager::new(&node_data1).await.unwrap();
     manager1_restarted.start(&config1).await.unwrap();
+
+    drop(_guard3);
 
     sleep(Duration::from_secs(2)).await;
 
@@ -250,20 +236,14 @@ async fn test_mdns_peer_expiration_does_not_disconnect() {
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
 
     // Setup nodes (similar to previous test)
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir1.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir1.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir1);
 
     let node_data1 = create_test_node_data();
     let config1 = create_test_network_config(0, true);
     let manager1 = NetworkManager::new(&node_data1).await.unwrap();
     manager1.start(&config1).await.unwrap();
 
-    unsafe {
-        std::env::set_var("DHT_DB_PATH", temp_dir2.path().join("dht"));
-        std::env::set_var("PEER_REGISTRY_DB_PATH", temp_dir2.path().join("registry"));
-    }
+    setup_test_env_auto(&temp_dir2);
 
     let node_data2 = create_test_node_data();
     let config2 = create_test_network_config(0, true);
@@ -295,7 +275,7 @@ async fn test_mdns_peer_expiration_does_not_disconnect() {
 #[serial]
 async fn test_mdns_does_not_dial_self() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    setup_test_env(&temp_dir);
+    setup_test_env_auto(&temp_dir);
 
     let node_data = create_test_node_data();
     let config = create_test_network_config(0, true);
@@ -325,7 +305,7 @@ async fn test_mdns_rate_limiting() {
     // if discovered multiple times in quick succession
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    setup_test_env(&temp_dir);
+    setup_test_env_auto(&temp_dir);
 
     let node_data = create_test_node_data();
     let config = create_test_network_config(0, true);
