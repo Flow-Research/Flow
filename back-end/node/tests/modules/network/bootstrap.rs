@@ -59,8 +59,7 @@ async fn test_bootstrap_without_peers() {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
-        bootstrap: BootstrapConfig::default(),
+        ..Default::default()
     };
 
     let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -98,12 +97,12 @@ async fn test_bootstrap_peers_loaded() {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig {
             auto_dial: false,
             auto_bootstrap: false,
             ..Default::default()
         },
+        ..Default::default()
     };
 
     let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -136,12 +135,12 @@ async fn test_manual_bootstrap_trigger() {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig {
             auto_dial: false,
             auto_bootstrap: false,
             ..Default::default()
         },
+        ..Default::default()
     };
 
     let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -175,8 +174,7 @@ async fn test_bootstrap_invalid_address_filtered() {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
-        bootstrap: BootstrapConfig::default(),
+        ..Default::default()
     };
 
     let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -200,12 +198,12 @@ fn create_bootstrap_target_config(port: u16) -> NetworkConfig {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig {
             auto_dial: false,
             auto_bootstrap: false,
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 
@@ -219,13 +217,13 @@ fn create_bootstrap_client_config(bootstrap_addr: libp2p::Multiaddr) -> NetworkC
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig {
             auto_dial: true,
             auto_bootstrap: true,
             startup_delay_ms: 100,
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 
@@ -349,7 +347,6 @@ async fn test_bootstrap_retry_on_connection_failure() {
             enabled: false,
             ..Default::default()
         },
-        connection_limits: ConnectionLimits::default(),
         bootstrap: BootstrapConfig {
             auto_dial: true,
             auto_bootstrap: false, // Disable DHT bootstrap query for cleaner test
@@ -357,6 +354,7 @@ async fn test_bootstrap_retry_on_connection_failure() {
             max_retries: 2,
             retry_delay_base_ms: 100, // Fast retries for test
         },
+        ..Default::default()
     };
 
     let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -457,6 +455,7 @@ async fn test_bootstrap_partial_success_with_mixed_peers() {
             max_retries: 1, // Quick failure for unreachable peer
             retry_delay_base_ms: 100,
         },
+        ..Default::default()
     };
 
     let manager_b = NetworkManager::new(&node_b_data).await.unwrap();
