@@ -305,6 +305,37 @@ impl PersistentPeerRegistry {
     pub fn flush(&self) -> Result<(), AppError> {
         self.store.flush()
     }
+
+    /// Bulk load known peers (used for bootstrap peers)
+    ///
+    /// This adds peers to the known_peers map without establishing connections.
+    /// Also persists them to the database.
+    pub fn bulk_load_known_peers(&self, peers: std::collections::HashMap<PeerId, Vec<Multiaddr>>) {
+        // Update in-memory registry
+        {
+            let mut registry = self.inner.write().unwrap();
+            registry.bulk_load_known_peers(peers.clone());
+        }
+
+        // Persist to database
+        for (peer_id, addresses) in peers {
+            if let Err(e) = self.store.save_known_addresses(&peer_id, &addresses) {
+                error!(peer_id = %peer_id, error = %e, "Failed to persist bootstrap peer addresses");
+            }
+        }
+    }
+
+    /// Check if a peer is currently connected
+    pub fn is_connected(&self, peer_id: &PeerId) -> bool {
+        let registry = self.inner.read().unwrap();
+        registry.is_connected(peer_id)
+    }
+
+    /// Get reconnection count for a peer
+    pub fn get_reconnection_count(&self, peer_id: &PeerId) -> u32 {
+        let registry = self.inner.read().unwrap();
+        registry.get_reconnection_count(peer_id)
+    }
 }
 
 impl Drop for PersistentPeerRegistry {
