@@ -6,6 +6,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+use crate::bootstrap::init::setup_test_env;
 use crate::modules::network::mdns::create_test_network_config;
 
 fn create_test_node_data() -> NodeData {
@@ -16,19 +17,6 @@ fn create_test_node_data() -> NodeData {
         id: format!("did:key:test-{}", rand::random::<u32>()),
         private_key: signing_key.to_bytes().to_vec(),
         public_key: verifying_key.to_bytes().to_vec(),
-    }
-}
-
-fn setup_test_env(temp_dir: &TempDir, test_name: &str) {
-    unsafe {
-        std::env::set_var(
-            "DHT_DB_PATH",
-            temp_dir.path().join(format!("{}_dht", test_name)),
-        );
-        std::env::set_var(
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir.path().join(format!("{}_registry", test_name)),
-        );
     }
 }
 

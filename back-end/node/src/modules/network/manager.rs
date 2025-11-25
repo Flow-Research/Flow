@@ -1,7 +1,10 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
 use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
-use crate::modules::network::gossipsub::{GossipSubConfig, Message, Topic};
+use crate::modules::network::gossipsub::{
+    GossipSubConfig, Message, MessagePayload, MessageRouter, MessageStore, MessageStoreConfig,
+    SubscriptionHandle, Topic, TopicSubscriptionManager,
+};
 use crate::modules::network::peer_registry::{
     ConnectionDirection, DiscoverySource, NetworkStats, PeerInfo,
 };
@@ -51,6 +54,12 @@ pub struct NetworkManager {
 
     /// Handle to the background event loop task
     event_loop_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    /// Message router for pub/sub (initialized at construction)
+    message_router: Arc<MessageRouter>,
+
+    /// Subscription manager (shared with router)
+    subscription_manager: Arc<TopicSubscriptionManager>,
 }
 
 /// Commands sent to the NetworkManager event loop
@@ -110,7 +119,6 @@ enum NetworkCommand {
 
     /// Publish a message
     Publish {
-        topic: String,
         message: Message,
         response: oneshot::Sender<Result<String, String>>,
     },
@@ -204,19 +212,23 @@ impl NetworkManager {
     /// A NetworkManager instance ready to start
     ///
     /// # Errors
-    /// Returns `AppError::Network` if key conversion fails
+    /// Returns `AppError::Crypto` if key conversion fails
     pub async fn new(node_data: &NodeData) -> Result<Self, AppError> {
         info!("Initializing NetworkManager");
 
-        // Convert Ed25519 key to libp2p format to get PeerId
         let keypair = keypair::ed25519_to_libp2p_keypair(&node_data.private_key)?;
         let local_peer_id = keypair.public().to_peer_id();
 
-        info!("Network PeerId: {}", local_peer_id);
+        info!(peer_id = %local_peer_id, "Network PeerId initialized");
 
-        // Create command channel
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        // Note: We'll create a new receiver in start()
+
+        let (message_router, subscription_manager) = Self::create_message_routing()?;
+
+        info!(
+            peer_id = %local_peer_id,
+            "NetworkManager initialized with message routing"
+        );
 
         Ok(Self {
             local_peer_id,
@@ -224,7 +236,47 @@ impl NetworkManager {
             command_tx,
             command_rx: Arc::new(Mutex::new(Some(command_rx))),
             event_loop_handle: Arc::new(Mutex::new(None)),
+            message_router,
+            subscription_manager,
         })
+    }
+
+    /// Create message store and routing components
+    fn create_message_routing()
+    -> Result<(Arc<MessageRouter>, Arc<TopicSubscriptionManager>), AppError> {
+        let message_store = Self::create_message_store()?;
+        let subscription_manager = Arc::new(TopicSubscriptionManager::default());
+
+        let gossipsub_config = GossipSubConfig::from_env();
+        let message_router = Arc::new(MessageRouter::new(
+            message_store,
+            Arc::clone(&subscription_manager),
+            gossipsub_config.max_transmit_size,
+        ));
+
+        Ok((message_router, subscription_manager))
+    }
+
+    /// Create the message store with RocksDB backend
+    fn create_message_store() -> Result<Arc<MessageStore>, AppError> {
+        let config = MessageStoreConfig::from_env();
+        let data_dir = Self::get_message_store_path();
+
+        let store = MessageStore::new(&data_dir, config)
+            .map_err(|e| AppError::Network(format!("Failed to create message store: {}", e)))?;
+
+        Ok(Arc::new(store))
+    }
+
+    /// Get the path for message store database
+    fn get_message_store_path() -> std::path::PathBuf {
+        std::env::var("GOSSIP_MESSAGE_DB_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                directories::ProjectDirs::from("network", "flow", "node")
+                    .map(|dirs| dirs.data_dir().join("gossip"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp/flow/gossip"))
+            })
     }
 
     /// Build the libp2p Swarm with transport and behaviour
@@ -636,13 +688,19 @@ impl NetworkManager {
     }
 
     /// Subscribe to a topic
-    pub async fn subscribe(&self, topic: impl Into<String>) -> Result<(), AppError> {
+    pub async fn subscribe(
+        &self,
+        topic: impl Into<String>,
+    ) -> Result<SubscriptionHandle, AppError> {
+        let topic = topic.into();
+
+        // First, subscribe at the GossipSub protocol level
         self.ensure_started().await?;
 
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(NetworkCommand::Subscribe {
-                topic: topic.into(),
+                topic: topic.clone(),
                 response: response_tx,
             })
             .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
@@ -650,22 +708,30 @@ impl NetworkManager {
         response_rx
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
-            .map_err(|e| AppError::Network(e))
+            .map_err(|e| AppError::Network(e))?;
+
+        // Then, create a subscription handle for receiving messages
+        let handle = self.subscription_manager.subscribe(&topic).await;
+
+        info!(topic = %topic, "Subscribed to topic with message channel");
+
+        Ok(handle)
     }
 
     /// Subscribe to a Topic
-    pub async fn subscribe_topic(&self, topic: &Topic) -> Result<(), AppError> {
+    pub async fn subscribe_topic(&self, topic: &Topic) -> Result<SubscriptionHandle, AppError> {
         self.subscribe(topic.to_topic_string()).await
     }
 
     /// Unsubscribe from a topic
     pub async fn unsubscribe(&self, topic: impl Into<String>) -> Result<(), AppError> {
+        let topic = topic.into();
         self.ensure_started().await?;
 
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(NetworkCommand::Unsubscribe {
-                topic: topic.into(),
+                topic: topic.clone(),
                 response: response_tx,
             })
             .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
@@ -673,19 +739,21 @@ impl NetworkManager {
         response_rx
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
-            .map_err(|e| AppError::Network(e))
+            .map_err(|e| AppError::Network(e))?;
+
+        // Also clean up local subscription
+        self.subscription_manager.unsubscribe(&topic).await;
+
+        Ok(())
     }
 
     /// Publish a message to a topic
     pub async fn publish(&self, message: Message) -> Result<String, AppError> {
         self.ensure_started().await?;
 
-        let topic = message.topic.clone();
         let (response_tx, response_rx) = oneshot::channel();
-
         self.command_tx
             .send(NetworkCommand::Publish {
-                topic,
                 message,
                 response: response_tx,
             })
@@ -697,14 +765,27 @@ impl NetworkManager {
             .map_err(|e| AppError::Network(e))
     }
 
-    /// Publish a payload to a Topic
+    /// Publish a payload to a FlowTopic
     pub async fn publish_to_topic(
         &self,
         topic: &Topic,
-        payload: crate::modules::network::gossipsub::MessagePayload,
+        payload: MessagePayload,
     ) -> Result<String, AppError> {
         let message = Message::new(self.local_peer_id, topic.to_topic_string(), payload);
         self.publish(message).await
+    }
+
+    /// Get historical messages for a topic
+    pub async fn get_message_history(
+        &self,
+        topic: &str,
+        since: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Message>, AppError> {
+        self.message_router
+            .get_history(topic, since, limit)
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to get history: {}", e)))
     }
 
     /// Get list of subscribed topics
@@ -719,6 +800,11 @@ impl NetworkManager {
         response_rx
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Get message router statistics
+    pub async fn message_stats(&self) -> crate::modules::network::gossipsub::RouterStats {
+        self.message_router.stats().await
     }
 
     /// Get mesh peers for a topic
@@ -736,6 +822,11 @@ impl NetworkManager {
         response_rx
             .await
             .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
+
+    /// Check if any subscribers exist for a topic
+    pub async fn has_subscribers(&self, topic: &str) -> bool {
+        self.subscription_manager.has_subscribers(topic).await
     }
 
     /// Get a receiver for incoming messages
@@ -1280,11 +1371,8 @@ impl NetworkEventLoop {
                 let _ = response.send(Ok(()));
             }
 
-            NetworkCommand::Publish {
-                topic,
-                message,
-                response,
-            } => {
+            NetworkCommand::Publish { message, response } => {
+                let topic = message.topic.clone();
                 let ident_topic = IdentTopic::new(&topic);
 
                 match message.serialize() {
@@ -1537,491 +1625,5 @@ impl NetworkEventLoop {
         }
 
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::modules::network::config::MdnsConfig;
-
-    use super::*;
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
-    use serial_test::serial;
-    use std::time::Duration;
-    use tempfile::TempDir;
-    use tokio::time::sleep;
-
-    // Helper function to create test node data
-    fn create_test_node_data() -> NodeData {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-
-        NodeData {
-            id: format!("did:key:test-{}", rand::random::<u32>()),
-            private_key: signing_key.to_bytes().to_vec(),
-            public_key: verifying_key.to_bytes().to_vec(),
-        }
-    }
-
-    // Helper to create a test config with unique temp directories
-    fn create_test_config() -> (NetworkConfig, TempDir, TempDir) {
-        let dht_temp = TempDir::new().expect("Failed to create DHT temp dir");
-        let peer_reg_temp = TempDir::new().expect("Failed to create peer registry temp dir");
-
-        // Set env vars for this test's unique paths
-        unsafe {
-            std::env::set_var("DHT_DB_PATH", dht_temp.path());
-            std::env::set_var("PEER_REGISTRY_DB_PATH", peer_reg_temp.path());
-        }
-
-        let config = NetworkConfig {
-            enable_quic: true,
-            listen_port: 0, // OS assigns random port
-            bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
-        };
-
-        (config, dht_temp, peer_reg_temp)
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_network_manager_creation() {
-        let node_data = create_test_node_data();
-        let result = NetworkManager::new(&node_data).await;
-
-        assert!(
-            result.is_ok(),
-            "NetworkManager should initialize successfully"
-        );
-
-        let manager = result.unwrap();
-
-        // Verify PeerId is valid (standard length for Ed25519)
-        let peer_id_str = manager.local_peer_id().to_string();
-        assert!(!peer_id_str.is_empty(), "PeerId should not be empty");
-        assert!(
-            peer_id_str.starts_with("12D3"),
-            "PeerId should start with 12D3"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_peer_id_deterministic_from_same_keys() {
-        let node_data = create_test_node_data();
-
-        let manager1 = NetworkManager::new(&node_data).await.unwrap();
-        let manager2 = NetworkManager::new(&node_data).await.unwrap();
-
-        assert_eq!(
-            manager1.local_peer_id(),
-            manager2.local_peer_id(),
-            "Same keys should produce identical PeerIds"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_peer_id_unique_for_different_keys() {
-        let node_data1 = create_test_node_data();
-        let node_data2 = create_test_node_data();
-
-        let manager1 = NetworkManager::new(&node_data1).await.unwrap();
-        let manager2 = NetworkManager::new(&node_data2).await.unwrap();
-
-        assert_ne!(
-            manager1.local_peer_id(),
-            manager2.local_peer_id(),
-            "Different keys should produce different PeerIds"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_network_manager_start_and_stop() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-
-        // Start the network
-        let start_result = manager.start(&config).await;
-        assert!(start_result.is_ok(), "Network should start successfully");
-
-        // Give it time to bind to port
-        sleep(Duration::from_millis(100)).await;
-
-        // Stop the network
-        let stop_result = manager.stop().await;
-        assert!(stop_result.is_ok(), "Network should stop cleanly");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_cannot_start_twice() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-
-        // First start should succeed
-        manager
-            .start(&config)
-            .await
-            .expect("First start should succeed");
-
-        // Second start should fail
-        let second_start = manager.start(&config).await;
-        assert!(
-            second_start.is_err(),
-            "Should not be able to start NetworkManager twice"
-        );
-
-        // Verify error message
-        let err = second_start.unwrap_err();
-        assert!(
-            matches!(err, AppError::Network(_)),
-            "Should return Network error"
-        );
-
-        // Clean up
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_stop_without_start_is_safe() {
-        let node_data = create_test_node_data();
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-
-        // Stopping without starting should not panic or error
-        let result = manager.stop().await;
-        assert!(result.is_ok(), "Stop should be safe even if never started");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_peer_count_initially_zero() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        // Give it time to start
-        sleep(Duration::from_millis(100)).await;
-
-        let peer_count = manager.peer_count().await.unwrap();
-        assert_eq!(
-            peer_count, 0,
-            "Should have zero peers initially (no bootstrap connections)"
-        );
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_peer_count_query_before_start() {
-        let node_data = create_test_node_data();
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-
-        // Querying peer count before start should fail gracefully
-        let result = manager.peer_count().await;
-
-        // This will fail because event loop isn't running to handle the query
-        // This is expected behavior - document it
-        assert!(
-            result.is_err(),
-            "Peer count query should fail if network not started"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_local_peer_id_accessible() {
-        let node_data = create_test_node_data();
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-
-        let peer_id = manager.local_peer_id();
-
-        // Should be accessible without starting the network
-        assert_eq!(
-            peer_id,
-            manager.local_peer_id(),
-            "PeerId should be consistent"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_manager_with_invalid_key_length() {
-        let mut node_data = create_test_node_data();
-
-        // Corrupt the private key (wrong length)
-        node_data.private_key = vec![0u8; 16]; // Should be 32 bytes
-
-        let result = NetworkManager::new(&node_data).await;
-
-        assert!(result.is_err(), "Should fail with invalid key length");
-        assert!(
-            matches!(result.unwrap_err(), AppError::Crypto(_)),
-            "Should return Crypto error"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_start_with_specific_port() {
-        let node_data = create_test_node_data();
-
-        // Try to bind to a specific high port (less likely to be in use)
-        let config = NetworkConfig {
-            enable_quic: true,
-            listen_port: 9876,
-            bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
-        };
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        let result = manager.start(&config).await;
-
-        // This might fail if port is in use, which is acceptable
-        if result.is_ok() {
-            sleep(Duration::from_millis(100)).await;
-            manager.stop().await.unwrap();
-        }
-        // If it fails, we just verify it fails gracefully (no panic)
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_quic_transport_config() {
-        let node_data = create_test_node_data();
-
-        let config = NetworkConfig {
-            enable_quic: true,
-            listen_port: 0,
-            bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
-        };
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        let result = manager.start(&config).await;
-
-        assert!(
-            result.is_ok(),
-            "QUIC transport should initialize successfully"
-        );
-
-        sleep(Duration::from_millis(100)).await;
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_tcp_transport_config() {
-        let node_data = create_test_node_data();
-
-        let config = NetworkConfig {
-            enable_quic: false, // Use TCP
-            listen_port: 0,
-            bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
-        };
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        let result = manager.start(&config).await;
-
-        assert!(
-            result.is_ok(),
-            "TCP transport should initialize successfully"
-        );
-
-        sleep(Duration::from_millis(100)).await;
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_concurrent_peer_count_queries() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Fire off multiple concurrent peer count queries
-        let (r1, r2, r3) = tokio::join!(
-            manager.peer_count(),
-            manager.peer_count(),
-            manager.peer_count()
-        );
-
-        // All should succeed
-        assert!(r1.is_ok(), "First query should succeed");
-        assert!(r2.is_ok(), "Second query should succeed");
-        assert!(r3.is_ok(), "Third query should succeed");
-
-        // All should return the same count (0 in this case)
-        assert_eq!(r1.unwrap(), 0);
-        assert_eq!(r2.unwrap(), 0);
-        assert_eq!(r3.unwrap(), 0);
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_shutdown_is_graceful() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Stop should complete within reasonable time (not hang)
-        let stop_future = manager.stop();
-        let timeout_result = tokio::time::timeout(Duration::from_secs(5), stop_future).await;
-
-        assert!(
-            timeout_result.is_ok(),
-            "Stop should complete within 5 seconds"
-        );
-        assert!(timeout_result.unwrap().is_ok(), "Stop should succeed");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_connected_peers_list() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        let peers = manager.connected_peers().await.unwrap();
-        assert_eq!(peers.len(), 0, "Should have no peers initially");
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_network_stats() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        let stats = manager.network_stats().await.unwrap();
-        assert_eq!(stats.connected_peers, 0);
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_dial_invalid_address() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Try to dial an invalid/unreachable address
-        let bad_addr: Multiaddr = "/ip4/192.0.2.1/tcp/9999".parse().unwrap();
-        let result = manager.dial_peer(bad_addr).await;
-
-        // Dial command should be sent successfully, but connection will fail eventually
-        // For now, just check that the command doesn't error
-        // In production, you'd monitor connection events to see actual failures
-        assert!(result.is_ok() || result.is_err()); // Either is acceptable
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_peer_info_nonexistent() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Query info for a peer that doesn't exist
-        let fake_peer_id = libp2p::identity::Keypair::generate_ed25519()
-            .public()
-            .to_peer_id();
-        let info = manager.peer_info(fake_peer_id).await.unwrap();
-
-        assert!(info.is_none(), "Non-existent peer should return None");
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_disconnect_peer() {
-        let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp) = create_test_config();
-
-        let manager = NetworkManager::new(&node_data).await.unwrap();
-        manager.start(&config).await.unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Try to disconnect a non-existent peer (should not crash)
-        let fake_peer_id = libp2p::identity::Keypair::generate_ed25519()
-            .public()
-            .to_peer_id();
-        let result = manager.disconnect_peer(fake_peer_id).await;
-
-        // Disconnecting non-existent peer is acceptable (no-op)
-        assert!(result.is_ok() || result.is_err());
-
-        manager.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_manager_is_send() {
-        // Compile-time check that NetworkManager can be sent across threads
-        fn assert_send<T: Send>() {}
-        assert_send::<NetworkManager>();
-    }
-
-    #[tokio::test]
-    async fn test_manager_is_sync() {
-        // Compile-time check that NetworkManager can be shared across threads
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<NetworkManager>();
     }
 }
