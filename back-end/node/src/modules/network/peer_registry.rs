@@ -193,13 +193,6 @@ impl PeerRegistry {
     ///
     /// # Arguments
     /// * `peers` - Map of PeerID to their known addresses
-    ///
-    /// # Example
-    /// ```no_run
-    /// let mut registry = PeerRegistry::new();
-    /// let known_peers = load_from_database();
-    /// registry.bulk_load_known_peers(known_peers);
-    /// ```
     pub fn bulk_load_known_peers(&mut self, peers: HashMap<PeerId, Vec<Multiaddr>>) {
         let count = peers.len();
 
@@ -242,13 +235,6 @@ impl PeerRegistry {
     ///
     /// # Arguments
     /// * `counts` - Map of PeerID to their reconnection count
-    ///
-    /// # Example
-    /// ```no_run
-    /// let mut registry = PeerRegistry::new();
-    /// let counts = load_reconnection_counts_from_database();
-    /// registry.bulk_load_reconnection_counts(counts);
-    /// ```
     pub fn bulk_load_reconnection_counts(&mut self, counts: HashMap<PeerId, u32>) {
         let count = counts.len();
 

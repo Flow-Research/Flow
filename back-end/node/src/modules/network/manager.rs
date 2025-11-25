@@ -1,5 +1,6 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
+use crate::modules::network::config::{ConnectionLimitPolicy, ConnectionLimits};
 use crate::modules::network::peer_registry::{
     ConnectionDirection, DiscoverySource, NetworkStats, PeerInfo,
 };
@@ -69,22 +70,59 @@ enum NetworkCommand {
 
     /// Get network statistics
     GetNetworkStats(oneshot::Sender<NetworkStats>),
+
+    /// Get connection capacity status
+    GetConnectionCapacity(oneshot::Sender<ConnectionCapacityStatus>),
+}
+
+/// Connection capacity status
+#[derive(Debug, Clone)]
+pub struct ConnectionCapacityStatus {
+    pub active_connections: usize,
+    pub max_connections: usize,
+    pub available_slots: usize,
+    pub can_accept_inbound: bool,
+    pub can_dial_outbound: bool,
 }
 
 /// Internal event loop handling Swarm events
 struct NetworkEventLoop {
+    /// The libp2p Swarm managing P2P connections, protocols, and network behavior.
+    /// Processes events from the transport layer and routes them to appropriate handlers.
     swarm: Swarm<FlowBehaviour>,
+
+    /// Channel receiver for commands from NetworkManager API.
+    /// Commands include peer queries, dial requests, disconnect operations, and shutdown signals.
     command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
+
+    /// Thread-safe persistent peer registry for storing connection history and peer metadata.
+    /// Tracks discovered peers, connection statistics, and provides data persistence across restarts.
     peer_registry: Arc<PersistentPeerRegistry>,
 
-    /// Track peers we're currently dialing to prevent duplicate attempts
+    /// Track peers we're currently dialing to prevent duplicate attempts.
+    /// A peer is added when dialing starts and removed when connection succeeds/fails.
+    /// Prevents wasted resources and connection race conditions.
     dialing_peers: HashSet<PeerId>,
 
-    /// Track when we last attempted to dial each peer (for rate limiting)
-    last_dial_attempt: std::collections::HashMap<PeerId, StdInstant>,
+    /// Track when we last attempted to dial each peer (for rate limiting).
+    /// Prevents hammering unreachable peers by enforcing minimum retry intervals.
+    /// Entries may be cleaned up periodically to prevent unbounded growth.
+    last_dial_attempt: HashMap<PeerId, StdInstant>,
 
-    /// Track how we discovered each peer (for setting discovery_source on connection)
+    /// Track how we discovered each peer (mDNS, DHT, bootstrap, manual).
+    /// Used to set the discovery_source field when connection is established,
+    /// enabling analysis of discovery method effectiveness and network topology.
     peer_discovery_source: HashMap<PeerId, DiscoverySource>,
+
+    /// Connection limits configuration (max connections, policy, reserved slots).
+    /// Applied to inbound connection decisions to prevent resource exhaustion
+    /// while maintaining capacity for critical outbound connections.
+    connection_limits: ConnectionLimits,
+
+    /// Track active connection count for enforcing connection limits.
+    /// Incremented on ConnectionEstablished, decremented on ConnectionClosed.
+    /// Used with connection_limits to gate new inbound connections.
+    active_connections: usize,
 }
 
 impl NetworkManager {
@@ -192,7 +230,7 @@ impl NetworkManager {
         let listen_addr = Self::resolve_listen_address(config)?;
         let swarm = self.build_configured_swarm(config).await?;
         let command_rx = self.take_command_receiver().await?;
-        let event_loop = self.create_event_loop(swarm, command_rx)?;
+        let event_loop = self.create_event_loop(swarm, command_rx, config)?;
 
         // 3. Start listening and spawn
         let handle = self.spawn_event_loop(event_loop, listen_addr).await?;
@@ -248,6 +286,7 @@ impl NetworkManager {
         &self,
         swarm: Swarm<FlowBehaviour>,
         command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
+        config: &NetworkConfig,
     ) -> Result<NetworkEventLoop, AppError> {
         let peer_registry_config = PeerRegistryConfig::from_env();
         let mut persistent_registry =
@@ -264,6 +303,8 @@ impl NetworkManager {
             dialing_peers: HashSet::new(),
             last_dial_attempt: HashMap::new(),
             peer_discovery_source: HashMap::new(),
+            connection_limits: config.connection_limits.clone(),
+            active_connections: 0,
         })
     }
 
@@ -430,6 +471,19 @@ impl NetworkManager {
         }
         Ok(())
     }
+
+    /// Get connection capacity status
+    pub async fn connection_capacity(&self) -> Result<ConnectionCapacityStatus, AppError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::GetConnectionCapacity(response_tx))
+            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
+
+        response_rx
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+    }
 }
 
 impl NetworkEventLoop {
@@ -480,11 +534,57 @@ impl NetworkEventLoop {
                 established_in,
                 ..
             } => {
+                // Increment connection counter FIRST
+                self.active_connections += 1;
+
                 let direction = if endpoint.is_dialer() {
                     ConnectionDirection::Outbound
                 } else {
                     ConnectionDirection::Inbound
                 };
+
+                // Check limits AFTER incrementing (for both inbound and outbound if needed)
+                let should_disconnect = if self.connection_limits.max_connections == 0 {
+                    false // Unlimited
+                } else {
+                    match self.connection_limits.policy {
+                        ConnectionLimitPolicy::Strict => {
+                            // Strict: reject ANY connection over max
+                            self.active_connections > self.connection_limits.max_connections
+                        }
+                        ConnectionLimitPolicy::PreferOutbound => {
+                            // PreferOutbound: only reject INBOUND over inbound_limit
+                            // Outbound can go up to max_connections
+                            if direction == ConnectionDirection::Inbound {
+                                let inbound_limit = self
+                                    .connection_limits
+                                    .max_connections
+                                    .saturating_sub(self.connection_limits.reserved_outbound);
+                                self.active_connections > inbound_limit
+                            } else {
+                                // Outbound: only check against total max
+                                self.active_connections > self.connection_limits.max_connections
+                            }
+                        }
+                    }
+                };
+
+                if should_disconnect {
+                    warn!(
+                        active_connections = self.active_connections,
+                        max_connections = self.connection_limits.max_connections,
+                        policy = ?self.connection_limits.policy,
+                        direction = ?direction,
+                        peer_id = %peer_id,
+                        "Connection limit exceeded, disconnecting peer"
+                    );
+
+                    // Disconnect immediately
+                    let _ = self.swarm.disconnect_peer_id(peer_id);
+
+                    // Don't process further
+                    return;
+                }
 
                 // Determine discovery source
                 // For outbound connections, we look up how we discovered them
@@ -498,6 +598,7 @@ impl NetworkEventLoop {
                 };
 
                 info!(
+                    active_connections = self.active_connections,
                     "Connection established with {} via {} (direction: {:?}, source: {:?}, time: {:?})",
                     peer_id,
                     endpoint.get_remote_address(),
@@ -518,13 +619,26 @@ impl NetworkEventLoop {
             }
 
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                debug!("Connection closed with {}: {:?}", peer_id, cause);
+                self.active_connections = self.active_connections.saturating_sub(1);
+
+                debug!(
+                    active_connections = self.active_connections,
+                    peer_id = %peer_id,
+                    cause = ?cause,
+                    "Connection closed"
+                );
+
                 self.peer_registry.on_connection_closed(&peer_id);
                 self.dialing_peers.remove(&peer_id);
             }
 
             SwarmEvent::IncomingConnection { send_back_addr, .. } => {
-                debug!("Incoming connection from {}", send_back_addr);
+                debug!(
+                    active_connections = self.active_connections,
+                    max_connections = self.connection_limits.max_connections,
+                    from = %send_back_addr,
+                    "Incoming connection attempt"
+                );
             }
 
             SwarmEvent::IncomingConnectionError {
@@ -623,6 +737,25 @@ impl NetworkEventLoop {
             NetworkCommand::GetNetworkStats(response_tx) => {
                 let stats = self.peer_registry.stats();
                 let _ = response_tx.send(stats);
+            }
+
+            NetworkCommand::GetConnectionCapacity(response) => {
+                let status = ConnectionCapacityStatus {
+                    active_connections: self.active_connections,
+                    max_connections: self.connection_limits.max_connections,
+                    available_slots: self
+                        .connection_limits
+                        .max_connections
+                        .saturating_sub(self.active_connections),
+                    can_accept_inbound: self
+                        .connection_limits
+                        .can_accept_inbound(self.active_connections),
+                    can_dial_outbound: self
+                        .connection_limits
+                        .can_dial_outbound(self.active_connections),
+                };
+
+                let _ = response.send(status);
             }
         }
 
@@ -739,7 +872,12 @@ impl NetworkEventLoop {
             return false;
         }
 
-        // Don't dial if already connected
+        // Don't dial if already connected (check swarm's connection list)
+        if self.swarm.is_connected(peer_id) {
+            return false;
+        }
+
+        // Don't dial if already in peer registry
         if self.peer_registry.get_peer(peer_id).is_some() {
             return false;
         }
@@ -801,6 +939,7 @@ mod tests {
             listen_port: 0, // OS assigns random port
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
+            connection_limits: ConnectionLimits::default(),
         };
 
         (config, dht_temp, peer_reg_temp)
@@ -1004,6 +1143,7 @@ mod tests {
             listen_port: 9876,
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
+            connection_limits: ConnectionLimits::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1027,6 +1167,7 @@ mod tests {
             listen_port: 0,
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
+            connection_limits: ConnectionLimits::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -1051,6 +1192,7 @@ mod tests {
             listen_port: 0,
             bootstrap_peers: vec![],
             mdns: MdnsConfig::default(),
+            connection_limits: ConnectionLimits::default(),
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();

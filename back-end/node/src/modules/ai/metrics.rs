@@ -21,7 +21,7 @@ pub struct PipelineMetrics {
 }
 
 impl PipelineMetrics {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             files_loaded: Arc::new(AtomicUsize::new(0)),
             files_skipped: Arc::new(AtomicUsize::new(0)),

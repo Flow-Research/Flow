@@ -173,7 +173,7 @@ impl RocksDbStore {
     }
 
     /// Count total records in the store
-    fn record_count(&self) -> usize {
+    pub fn record_count(&self) -> usize {
         let cf = self.db.cf_handle(CF_RECORDS).unwrap();
         self.db
             .iterator_cf(&cf, rocksdb::IteratorMode::Start)
@@ -181,7 +181,7 @@ impl RocksDbStore {
     }
 
     /// Count total provider records
-    fn provider_count(&self) -> usize {
+    pub fn provider_count(&self) -> usize {
         let cf = self.db.cf_handle(CF_PROVIDERS).unwrap();
         self.db
             .iterator_cf(&cf, rocksdb::IteratorMode::Start)

@@ -98,8 +98,8 @@ pub struct SignedPayload<P: EventPayload> {
 pub struct RocksDbEventStore {
     db: Arc<DB>,
     validator: Arc<EventValidator>,
-    stream_id: String,
-    space_id: String,
+    _stream_id: String,
+    _space_id: String,
     append_lock: Mutex<()>,
 }
 
@@ -196,8 +196,8 @@ impl RocksDbEventStore {
         Ok(Self {
             db,
             validator: Arc::new(validator),
-            stream_id,
-            space_id,
+            _stream_id: stream_id,
+            _space_id: space_id,
             append_lock: Mutex::new(()),
         })
     }

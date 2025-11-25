@@ -1,18 +1,15 @@
 //! Integration tests for mDNS local discovery
 
-use libp2p::identity::Keypair;
-use libp2p::{Multiaddr, PeerId};
 use node::bootstrap::init::NodeData;
-use node::modules::network::config::{MdnsConfig, NetworkConfig};
+use node::modules::network::config::{ConnectionLimits, MdnsConfig, NetworkConfig};
 use node::modules::network::manager::NetworkManager;
-use node::modules::network::peer_registry::DiscoverySource;
 use serial_test::serial;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
 // Helper to create unique test configs
-fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
+pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
     NetworkConfig {
         enable_quic: false, // Use TCP for simpler local testing
         listen_port: port,
@@ -22,6 +19,7 @@ fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
             service_name: "_flow-p2p._udp.local".to_string(),
             query_interval_secs: 5, // Faster for tests
         },
+        connection_limits: ConnectionLimits::default(),
     }
 }
 
@@ -163,7 +161,6 @@ async fn test_mdns_two_nodes_discover_each_other() {
 
 #[tokio::test]
 #[serial]
-// #[ignore] // Network-dependent test
 async fn test_mdns_discovered_peers_stored_in_database() {
     let temp_dir1 = TempDir::new().expect("Failed to create temp dir 1");
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
@@ -191,7 +188,7 @@ async fn test_mdns_discovered_peers_stored_in_database() {
     let config2 = create_test_network_config(0, true);
     let manager2 = NetworkManager::new(&node_data2).await.unwrap();
     manager2.start(&config2).await.unwrap();
-    let peer_id2 = manager2.local_peer_id();
+    let _peer_id2 = manager2.local_peer_id();
 
     // Wait for discovery
     sleep(Duration::from_secs(10)).await;
