@@ -47,16 +47,14 @@ Flow is not a single app or API. It is a network of protocols, services, and age
 
 ## Flow of Activity
 
-1.  Create/update objects.
-2.  Sign with DIDs, governed by capability tokens.
-3.  Discover and connect to the Flow network.
-4.  Grant access control and permissions to objects.
-5.  Users can spin up Agents connected to their knowledge base. 
-6.  Agents execute via SLRPA (Sense → Learn → Reason → Predict → Act).
-7.  Results logged, verified.
-8.  Rewards triggered by provenance/policy.
-9.  Explore the knowledge base via an intuitive UI.
-
+1.  Create and update your objects.
+2.  Everything is signed and secure using your digital ID.
+3.  Connect to the Flow network and find what you need.
+4.  Start Agents that plug into your own knowledge and data.
+5.  Agents sense, learn, think, predict, and act on your behalf.
+6.  Their actions and results are recorded and checked.
+7.  Rewards are given based on clear rules and proven contributions.
+8.  Explore and manage all of this through a simple, visual interface.
 
 
 ## Running the Codebase
