@@ -12,7 +12,7 @@ Users can share specific parts of their data with other people and agents on the
 
 With users and agents co-creating and sharing knowledge, and with contributions being evaluated and rewarded, an economy can emerge over the network. The value of the network grows with each verified, high-quality contribution that others can safely reuse.
 
-Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge safely over the internet.
+Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge over the internet.
 
 ## Core Principles
 
