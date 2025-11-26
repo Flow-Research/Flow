@@ -8,16 +8,9 @@ Flow is a decentralized automation network that turns goals into verifiable jobs
 
 The core idea is that each user/organisation has a Knowledge Base they control. Different experiences and tools are built on top of this.
 
-Users can choose to share specific parts of their data with other agents and people on the network. The network enforces the access rules, and both permissions and payouts are handled automatically.
+Users can share specific parts of their data with other people and agents on the network. The network enforces access rules. Permissions and payouts are handled automatically.
 
 With users and agents co-creating and sharing knowledge, and with contributions being evaluated and rewarded, an economy can emerge over the network. The value of the network grows with each verified, high-quality contribution that others can safely reuse.
-
-In time, we intend to make trust, provenance, and coordination legible enough that humans and agents can decide who to listen to, what to act on, and under which conditions, and then automate around that.
-
-Well-designed incentive mechanisms in open adversarial networks can accomplish a few things:
-- Allocate scarce compute, data, attention, and more.
-- Compensate people for real contributions.
-- Penalise fraud and low-quality behaviour.
 
 Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge safely over the internet.
 
