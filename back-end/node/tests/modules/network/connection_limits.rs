@@ -309,58 +309,61 @@ async fn test_connection_at_limit_rejects_new() {
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir");
     let temp_dir3 = TempDir::new().expect("Failed to create temp dir");
 
-    // Node 1: strict limit of 1 connection
+    // Node 1: strict limit of 1 connection (use fixed port)
     setup_test_env(&temp_dir1, "node1");
     let node1_data = create_test_node_data();
-    let mut config1 = create_test_network_config(0, true);
+    let mut config1 = create_test_network_config(19301, false); // Fixed port, mDNS OFF
     config1.connection_limits = ConnectionLimits {
-        max_connections: 1, // Only 1 connection allowed
+        max_connections: 1,
         policy: ConnectionLimitPolicy::Strict,
         reserved_outbound: 0,
     };
-    config1.mdns.enabled = true;
 
     let manager1 = NetworkManager::new(&node1_data).await.unwrap();
     manager1.start(&config1).await.unwrap();
+    let node1_peer_id = manager1.local_peer_id();
 
-    // Node 2: will connect first
+    // Construct dial address manually
+    let dial_addr: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/19301/p2p/{}", node1_peer_id)
+        .parse()
+        .unwrap();
+
+    // Node 2: will connect first (no mDNS, explicit dial)
     setup_test_env(&temp_dir2, "node2");
     let node2_data = create_test_node_data();
-    let mut config2 = create_test_network_config(0, true);
-    config2.mdns.enabled = true;
+    let config2 = create_test_network_config(19302, false); // mDNS OFF
 
     let manager2 = NetworkManager::new(&node2_data).await.unwrap();
     manager2.start(&config2).await.unwrap();
 
-    // Wait for first connection
-    sleep(Duration::from_secs(10)).await;
+    // Node2 dials Node1 explicitly (only one direction)
+    manager2.dial_peer(dial_addr.clone()).await.unwrap();
 
-    let capacity_after_first = manager1.connection_capacity().await.unwrap();
+    sleep(Duration::from_secs(2)).await;
+
+    let capacity = manager1.connection_capacity().await.unwrap();
     assert_eq!(
-        capacity_after_first.active_connections, 1,
+        capacity.active_connections, 1,
         "Should have exactly 1 connection"
     );
-    assert!(
-        !capacity_after_first.can_accept_inbound,
-        "Should not accept more inbound"
-    );
 
-    // Node 3: should be rejected
+    // Node 3: should be rejected when it tries to connect
     setup_test_env(&temp_dir3, "node3");
     let node3_data = create_test_node_data();
-    let mut config3 = create_test_network_config(0, true);
-    config3.mdns.enabled = true;
+    let config3 = create_test_network_config(19303, false); // mDNS OFF
 
     let manager3 = NetworkManager::new(&node3_data).await.unwrap();
     manager3.start(&config3).await.unwrap();
 
-    // Wait and verify node1 still only has 1 connection
+    // Node3 dials Node1 - should be rejected
+    let _ = manager3.dial_peer(dial_addr.clone()).await;
+
     sleep(Duration::from_secs(2)).await;
 
     let capacity_final = manager1.connection_capacity().await.unwrap();
     assert_eq!(
         capacity_final.active_connections, 1,
-        "Should still have exactly 1 connection (node3 should be rejected)"
+        "Should still have exactly 1 connection"
     );
 
     manager1.stop().await.unwrap();

@@ -1,11 +1,11 @@
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashMap;
 use std::time::Instant;
+use std::{collections::HashMap, fmt};
 use tracing::{debug, info, warn};
 
 /// Discovery source for tracking how peer was found
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DiscoverySource {
     /// Discovered via mDNS on local network
     Mdns,
@@ -16,12 +16,42 @@ pub enum DiscoverySource {
     /// Manually dialed by user/API
     Manual,
     /// Unknown or not tracked (for backwards compatibility)
+    #[default]
     Unknown,
 }
 
-impl Default for DiscoverySource {
-    fn default() -> Self {
-        Self::Unknown
+impl DiscoverySource {
+    /// Returns a stable string representation for API responses.
+    ///
+    /// These strings are part of the public API contract and should not change.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            DiscoverySource::Mdns => "mdns",
+            DiscoverySource::Dht => "dht",
+            DiscoverySource::Bootstrap => "bootstrap",
+            DiscoverySource::Manual => "manual",
+            DiscoverySource::Unknown => "unknown",
+        }
+    }
+
+    /// Parse a string back to DiscoverySource.
+    ///
+    /// Accepts both lowercase (API format) and capitalized (serde format).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "mdns" => Some(DiscoverySource::Mdns),
+            "dht" => Some(DiscoverySource::Dht),
+            "bootstrap" => Some(DiscoverySource::Bootstrap),
+            "manual" => Some(DiscoverySource::Manual),
+            "unknown" => Some(DiscoverySource::Unknown),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for DiscoverySource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -131,6 +161,35 @@ pub struct ConnectionStats {
 pub enum ConnectionDirection {
     Inbound,
     Outbound,
+}
+
+impl ConnectionDirection {
+    /// Returns a stable string representation for API responses.
+    ///
+    /// These strings are part of the public API contract and should not change.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ConnectionDirection::Inbound => "inbound",
+            ConnectionDirection::Outbound => "outbound",
+        }
+    }
+
+    /// Parse a string back to ConnectionDirection.
+    ///
+    /// Accepts both lowercase (API format) and capitalized (serde format).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "inbound" => Some(ConnectionDirection::Inbound),
+            "outbound" => Some(ConnectionDirection::Outbound),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ConnectionDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 /// Overall network statistics

@@ -1,9 +1,10 @@
 use crate::bootstrap::init::setup_test_server;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use node::api::servers::app_state::AppState;
 use node::api::servers::websocket;
+use node::api::{node::Node, servers::app_state::AppState};
 use serde_json::{Value, json};
+use serial_test::serial;
 use std::time::Duration;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite};
@@ -453,4 +454,587 @@ async fn test_websocket_connection_survives_network_blip() {
     server_handle.abort();
 
     info!("✓ WebSocket connection survived network activity");
+}
+
+/// Helper to wait for a specific network event type with timeout
+async fn wait_for_network_event(
+    ws_stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    expected_event_type: &str,
+    timeout_duration: Duration,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    while tokio::time::Instant::now() < deadline {
+        match timeout(deadline - tokio::time::Instant::now(), ws_stream.next()).await {
+            Ok(Some(Ok(tungstenite::Message::Text(text)))) => {
+                let msg: Value = serde_json::from_str(&text)?;
+
+                // Check if this is the network event we're waiting for
+                if msg.get("event") == Some(&json!("network")) {
+                    if let Some(payload) = msg.get("payload") {
+                        if payload.get("type") == Some(&json!(expected_event_type)) {
+                            return Ok(msg);
+                        }
+                    }
+                }
+                // Not the event we're looking for, continue waiting
+            }
+            Ok(Some(Ok(_))) => {
+                // Non-text message, continue waiting
+            }
+            Ok(Some(Err(e))) => {
+                return Err(format!("WebSocket error: {}", e).into());
+            }
+            Ok(None) => {
+                return Err("WebSocket stream ended unexpectedly".into());
+            }
+            Err(_) => {
+                return Err(
+                    format!("Timeout waiting for event type: {}", expected_event_type).into(),
+                );
+            }
+        }
+    }
+
+    Err(format!("Timeout waiting for event type: {}", expected_event_type).into())
+}
+
+/// Helper to collect all events within a time window
+async fn collect_events_for_duration(
+    ws_stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    duration: Duration,
+) -> Vec<Value> {
+    let mut events = vec![];
+    let deadline = tokio::time::Instant::now() + duration;
+
+    while tokio::time::Instant::now() < deadline {
+        match timeout(Duration::from_millis(100), ws_stream.next()).await {
+            Ok(Some(Ok(tungstenite::Message::Text(text)))) => {
+                if let Ok(msg) = serde_json::from_str::<Value>(&text) {
+                    if msg.get("event") == Some(&json!("network")) {
+                        events.push(msg);
+                    }
+                }
+            }
+            _ => {
+                // Timeout or other message, continue
+            }
+        }
+    }
+
+    events
+}
+
+/// Helper to create app state with network manager for event testing
+async fn setup_websocket_test_server_with_node() -> (String, tokio::task::JoinHandle<()>, Node) {
+    let server = setup_test_server().await;
+    let node = server.node.clone();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let port = addr.port();
+
+    let app_state = AppState::new(server.node.clone());
+    let router = build_websocket_router(app_state);
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let ws_url = format!("ws://127.0.0.1:{}/ws", port);
+    (ws_url, handle, node)
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_receives_network_started_event() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect WebSocket client
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    // Allow time for subscription to be established
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Execute: Broadcast NetworkStarted event
+    node.broadcast_network_event("NetworkStarted", json!({ "peer_id": node.peer_id() }))
+        .await;
+
+    // Assert: Client should receive the event
+    let event = wait_for_network_event(&mut ws_stream, "NetworkStarted", Duration::from_secs(5))
+        .await
+        .expect("Should receive NetworkStarted event");
+
+    // Verify event structure
+    assert_eq!(event["event"], "network");
+    assert_eq!(event["payload"]["type"], "NetworkStarted");
+    assert!(
+        event["payload"]["data"]["peer_id"].is_string(),
+        "Event should contain peer_id"
+    );
+    assert!(
+        event["payload"]["timestamp"].is_number(),
+        "Event should contain timestamp"
+    );
+
+    info!("Received NetworkStarted event: {:?}", event);
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ WebSocket client received NetworkStarted event");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_receives_network_stopped_event() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect WebSocket client
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Execute: Broadcast NetworkStopped event
+    node.broadcast_network_event("NetworkStopped", json!({}))
+        .await;
+
+    // Assert: Client should receive the event
+    let event = wait_for_network_event(&mut ws_stream, "NetworkStopped", Duration::from_secs(5))
+        .await
+        .expect("Should receive NetworkStopped event");
+
+    assert_eq!(event["event"], "network");
+    assert_eq!(event["payload"]["type"], "NetworkStopped");
+
+    info!("Received NetworkStopped event: {:?}", event);
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ WebSocket client received NetworkStopped event");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_multi_client_event_broadcast() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect multiple WebSocket clients
+    let num_clients = 5;
+    let mut clients = vec![];
+
+    for i in 0..num_clients {
+        let ws_stream = connect_to_websocket(&ws_url)
+            .await
+            .expect(&format!("Client {} should connect", i));
+        clients.push(ws_stream);
+    }
+
+    // Allow time for all subscriptions to be established
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Execute: Broadcast a single event
+    let test_event_data = json!({
+        "peer_id": node.peer_id(),
+        "test_marker": "multi_client_test"
+    });
+
+    node.broadcast_network_event("NetworkStarted", test_event_data.clone())
+        .await;
+
+    // Assert: ALL clients should receive the event
+    let mut received_count = 0;
+
+    for (i, mut client) in clients.into_iter().enumerate() {
+        match wait_for_network_event(&mut client, "NetworkStarted", Duration::from_secs(5)).await {
+            Ok(event) => {
+                assert_eq!(event["event"], "network");
+                assert_eq!(event["payload"]["type"], "NetworkStarted");
+                assert_eq!(event["payload"]["data"]["test_marker"], "multi_client_test");
+                received_count += 1;
+                info!("Client {} received event", i);
+            }
+            Err(e) => {
+                panic!("Client {} failed to receive event: {}", i, e);
+            }
+        }
+
+        client.close(None).await.ok();
+    }
+
+    assert_eq!(
+        received_count, num_clients,
+        "All {} clients should receive the event",
+        num_clients
+    );
+
+    server_handle.abort();
+
+    info!(
+        "✓ All {} WebSocket clients received broadcast event",
+        num_clients
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_network_start_stop_lifecycle_via_api() {
+    // Setup: Start test server with both REST and WebSocket
+    let server = setup_test_server().await;
+    let _node = server.node.clone();
+
+    // Start WebSocket server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_port = listener.local_addr().unwrap().port();
+
+    let app_state = AppState::new(server.node.clone());
+    let ws_router = build_websocket_router(app_state);
+
+    let ws_handle = tokio::spawn(async move {
+        axum::serve(listener, ws_router).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Connect WebSocket client
+    let ws_url = format!("ws://127.0.0.1:{}/ws", ws_port);
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Execute: Check initial network status via REST
+    let (status, body) =
+        super::rest::helpers::get_request(&server.router, "/api/v1/network/status").await;
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let initial_running = body["running"].as_bool().unwrap_or(false);
+    info!("Initial network running state: {}", initial_running);
+
+    // Execute: Start network via REST API (if not already running)
+    if !initial_running {
+        let (start_status, _start_body) =
+            super::rest::helpers::post_request(&server.router, "/api/v1/network/start", json!({}))
+                .await;
+
+        if start_status == axum::http::StatusCode::OK {
+            info!("Network started via REST API");
+
+            // Assert: WebSocket should receive NetworkStarted event
+            let event =
+                wait_for_network_event(&mut ws_stream, "NetworkStarted", Duration::from_secs(5))
+                    .await
+                    .expect("Should receive NetworkStarted event after REST API start");
+
+            assert_eq!(event["payload"]["type"], "NetworkStarted");
+            info!("Received NetworkStarted event via WebSocket");
+
+            // Execute: Stop network via REST API
+            let (stop_status, _) = super::rest::helpers::post_request(
+                &server.router,
+                "/api/v1/network/stop",
+                json!({}),
+            )
+            .await;
+
+            assert_eq!(stop_status, axum::http::StatusCode::OK);
+            info!("Network stopped via REST API");
+
+            // Assert: WebSocket should receive NetworkStopped event
+            let event =
+                wait_for_network_event(&mut ws_stream, "NetworkStopped", Duration::from_secs(5))
+                    .await
+                    .expect("Should receive NetworkStopped event after REST API stop");
+
+            assert_eq!(event["payload"]["type"], "NetworkStopped");
+            info!("Received NetworkStopped event via WebSocket");
+        }
+    } else {
+        // Network already running, test stop then start
+        let (stop_status, _) =
+            super::rest::helpers::post_request(&server.router, "/api/v1/network/stop", json!({}))
+                .await;
+
+        if stop_status == axum::http::StatusCode::OK {
+            let event =
+                wait_for_network_event(&mut ws_stream, "NetworkStopped", Duration::from_secs(5))
+                    .await
+                    .expect("Should receive NetworkStopped event");
+
+            assert_eq!(event["payload"]["type"], "NetworkStopped");
+        }
+    }
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    ws_handle.abort();
+
+    info!("✓ Network start/stop lifecycle via API with WebSocket events verified");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_network_events_arrive_in_order() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect WebSocket client
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Execute: Broadcast multiple events in sequence
+    let events_to_send = vec![
+        ("NetworkStarted", json!({"sequence": 1})),
+        (
+            "PeerConnected",
+            json!({"sequence": 2, "peer_id": "test-peer-1"}),
+        ),
+        (
+            "PeerConnected",
+            json!({"sequence": 3, "peer_id": "test-peer-2"}),
+        ),
+        (
+            "PeerDisconnected",
+            json!({"sequence": 4, "peer_id": "test-peer-1"}),
+        ),
+        ("NetworkStopped", json!({"sequence": 5})),
+    ];
+
+    for (event_type, data) in &events_to_send {
+        node.broadcast_network_event(event_type, data.clone()).await;
+        // Small delay to ensure ordering
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Assert: Collect events and verify order
+    let received_events = collect_events_for_duration(&mut ws_stream, Duration::from_secs(3)).await;
+
+    assert_eq!(
+        received_events.len(),
+        events_to_send.len(),
+        "Should receive all {} events, got {}",
+        events_to_send.len(),
+        received_events.len()
+    );
+
+    // Verify order by sequence number
+    for (i, event) in received_events.iter().enumerate() {
+        let expected_seq = (i + 1) as i64;
+        let actual_seq = event["payload"]["data"]["sequence"]
+            .as_i64()
+            .expect("Event should have sequence number");
+
+        assert_eq!(
+            actual_seq, expected_seq,
+            "Event {} should have sequence {}, got {}",
+            i, expected_seq, actual_seq
+        );
+
+        let expected_type = &events_to_send[i].0;
+        let actual_type = event["payload"]["type"].as_str().unwrap();
+
+        assert_eq!(
+            actual_type, *expected_type,
+            "Event {} should be type {}, got {}",
+            i, expected_type, actual_type
+        );
+    }
+
+    info!(
+        "Events received in order: {:?}",
+        received_events
+            .iter()
+            .map(|e| e["payload"]["type"].as_str().unwrap_or("unknown"))
+            .collect::<Vec<_>>()
+    );
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ Network events arrived in correct order");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_events_include_correct_payload() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect WebSocket client
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Execute: Broadcast event with specific payload
+    let custom_data = json!({
+        "peer_id": "12D3KooWTestPeerId",
+        "address": "/ip4/192.168.1.100/tcp/9000",
+        "direction": "Outbound",
+        "custom_field": "test_value_12345"
+    });
+
+    node.broadcast_network_event("PeerConnected", custom_data.clone())
+        .await;
+
+    // Assert: Verify payload structure and content
+    let event = wait_for_network_event(&mut ws_stream, "PeerConnected", Duration::from_secs(5))
+        .await
+        .expect("Should receive PeerConnected event");
+
+    // Verify top-level structure
+    assert_eq!(event["event"], "network", "Event type should be 'network'");
+
+    // Verify payload structure
+    let payload = &event["payload"];
+    assert_eq!(payload["type"], "PeerConnected");
+    assert!(
+        payload["timestamp"].is_number(),
+        "Should have numeric timestamp"
+    );
+    assert!(payload["source"].is_string(), "Should have source peer ID");
+
+    // Verify data content
+    let data = &payload["data"];
+    assert_eq!(data["peer_id"], "12D3KooWTestPeerId");
+    assert_eq!(data["address"], "/ip4/192.168.1.100/tcp/9000");
+    assert_eq!(data["direction"], "Outbound");
+    assert_eq!(data["custom_field"], "test_value_12345");
+
+    info!("Event payload verified: {:?}", event);
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ WebSocket event payload structure and content verified");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_late_subscriber_misses_past_events() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Execute: Broadcast event BEFORE any client connects
+    node.broadcast_network_event("NetworkStarted", json!({"before_connect": true}))
+        .await;
+
+    // Small delay
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connect WebSocket client AFTER event was broadcast
+    let mut ws_stream = connect_to_websocket(&ws_url)
+        .await
+        .expect("Should connect to WebSocket");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Broadcast another event AFTER client connected
+    node.broadcast_network_event("NetworkStopped", json!({"after_connect": true}))
+        .await;
+
+    // Assert: Client should receive only the second event
+    let event = wait_for_network_event(&mut ws_stream, "NetworkStopped", Duration::from_secs(3))
+        .await
+        .expect("Should receive event broadcast after connection");
+
+    assert_eq!(event["payload"]["data"]["after_connect"], true);
+
+    // Try to receive any other events (should timeout)
+    let extra_events =
+        collect_events_for_duration(&mut ws_stream, Duration::from_millis(500)).await;
+
+    // The only event should be the one we already received (NetworkStopped)
+    // We shouldn't receive the NetworkStarted that was broadcast before connection
+    let started_events: Vec<_> = extra_events
+        .iter()
+        .filter(|e| e["payload"]["type"] == "NetworkStarted")
+        .collect();
+
+    assert!(
+        started_events.is_empty(),
+        "Should not receive events broadcast before connection"
+    );
+
+    // Cleanup
+    ws_stream.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ Late subscriber correctly misses past events (broadcast semantics)");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_websocket_client_disconnect_does_not_affect_others() {
+    // Setup: Start WebSocket server with access to Node
+    let (ws_url, server_handle, node) = setup_websocket_test_server_with_node().await;
+
+    // Connect two clients
+    let mut client1 = connect_to_websocket(&ws_url)
+        .await
+        .expect("Client 1 should connect");
+
+    let mut client2 = connect_to_websocket(&ws_url)
+        .await
+        .expect("Client 2 should connect");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify both receive an event
+    node.broadcast_network_event("TestEvent1", json!({"test": 1}))
+        .await;
+
+    let event1_c1 = wait_for_network_event(&mut client1, "TestEvent1", Duration::from_secs(3))
+        .await
+        .expect("Client 1 should receive TestEvent1");
+    let event1_c2 = wait_for_network_event(&mut client2, "TestEvent1", Duration::from_secs(3))
+        .await
+        .expect("Client 2 should receive TestEvent1");
+
+    assert_eq!(event1_c1["payload"]["data"]["test"], 1);
+    assert_eq!(event1_c2["payload"]["data"]["test"], 1);
+
+    // Execute: Disconnect client 1
+    client1.close(None).await.expect("Client 1 should close");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Broadcast another event
+    node.broadcast_network_event("TestEvent2", json!({"test": 2}))
+        .await;
+
+    // Assert: Client 2 should still receive events
+    let event2_c2 = wait_for_network_event(&mut client2, "TestEvent2", Duration::from_secs(3))
+        .await
+        .expect("Client 2 should still receive events after Client 1 disconnected");
+
+    assert_eq!(event2_c2["payload"]["data"]["test"], 2);
+
+    // Cleanup
+    client2.close(None).await.ok();
+    server_handle.abort();
+
+    info!("✓ Client disconnect does not affect other clients");
 }

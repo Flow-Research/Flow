@@ -4,6 +4,9 @@ use std::fmt;
 /// Well-known topic prefixes for Flow network
 pub const TOPIC_PREFIX: &str = "/flow/v1";
 
+/// System topic constants for direct use
+pub const SYSTEM_NETWORK_EVENTS_TOPIC: &str = "/flow/v1/system/network-events";
+
 /// Pre-defined Flow topics
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Topic {

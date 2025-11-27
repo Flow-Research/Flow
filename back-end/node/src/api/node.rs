@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::pipeline_manager::PipelineManager;
 use crate::modules::network::config::NetworkConfig;
+use crate::modules::network::gossipsub::{Message, MessagePayload, SYSTEM_NETWORK_EVENTS_TOPIC};
 use crate::modules::network::manager::NetworkManager;
 use crate::modules::network::peer_registry::{NetworkStats, PeerInfo};
 use crate::modules::ssi::webauthn;
@@ -158,5 +159,31 @@ impl Node {
         webauthn::auth::finish_authentication(self, challenge_id, auth)
             .await
             .map_err(|e| AppError::Auth(format!("WebAuthn authentication failed: {}", e)))
+    }
+
+    /// Broadcast a network event to all subscribers
+    /// This uses the existing TopicSubscriptionManager infrastructure
+    pub async fn broadcast_network_event(&self, event_type: &str, data: serde_json::Value) {
+        let message = Message::new(
+            *self.network_manager.local_peer_id(),
+            SYSTEM_NETWORK_EVENTS_TOPIC,
+            MessagePayload::NetworkEvent {
+                event_type: event_type.to_string(),
+                data,
+            },
+        );
+
+        // Route through existing subscription manager
+        let delivered = self
+            .network_manager
+            .subscription_manager
+            .route(&message)
+            .await;
+
+        tracing::debug!(
+            event_type = event_type,
+            delivered = delivered,
+            "Network event broadcast"
+        );
     }
 }

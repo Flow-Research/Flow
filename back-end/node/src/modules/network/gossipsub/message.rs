@@ -89,6 +89,14 @@ pub enum MessagePayload {
 
     /// Pong response
     Pong { nonce: u64 },
+
+    /// Network lifecycle and peer events
+    NetworkEvent {
+        /// Event type: "NetworkStarted", "NetworkStopped", "PeerConnected", "PeerDisconnected", etc.
+        event_type: String,
+        /// Event-specific data
+        data: serde_json::Value,
+    },
 }
 
 /// A Flow network message with metadata and optional signature
