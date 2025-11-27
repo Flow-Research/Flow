@@ -342,8 +342,8 @@ async fn get_network_peers(
             peer_id: p.peer_id.to_string(),
             addresses: p.addresses.iter().map(|a| a.to_string()).collect(),
             connection_count: p.connection_count,
-            direction: format!("{:?}", p.connection_direction),
-            discovery_source: format!("{:?}", p.discovery_source),
+            direction: p.connection_direction.as_str().to_string(),
+            discovery_source: p.discovery_source.as_str().to_string(),
         })
         .collect();
 
