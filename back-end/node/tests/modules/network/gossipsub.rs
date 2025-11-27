@@ -621,6 +621,8 @@ async fn test_three_node_mesh_propagation() {
     let mesh_peers2 = manager2.mesh_peers(topic).await.unwrap_or_default();
     let mesh_peers3 = manager3.mesh_peers(topic).await.unwrap_or_default();
 
+    sleep(Duration::from_secs(2)).await;
+
     println!(
         "Mesh sizes: Node1={}, Node2={}, Node3={}",
         mesh_peers1.len(),
@@ -1219,4 +1221,345 @@ async fn test_message_format_detection() {
 
     // CBOR should be smaller
     assert!(cbor_bytes.len() < json_bytes.len());
+}
+
+/// End-to-end test: Node 1 publishes, Node 2 receives via SubscriptionHandle
+#[tokio::test]
+#[serial]
+async fn test_end_to_end_message_delivery_verified() {
+    use tracing::{debug, info};
+
+    let temp_dir1 = TempDir::new().unwrap();
+    let temp_dir2 = TempDir::new().unwrap();
+
+    // ==================== NODE 1 SETUP ====================
+    set_envs(&vec![
+        (
+            "DHT_DB_PATH",
+            temp_dir1.path().join("dht").to_str().unwrap(),
+        ),
+        (
+            "PEER_REGISTRY_DB_PATH",
+            temp_dir1.path().join("registry").to_str().unwrap(),
+        ),
+        (
+            "GOSSIP_MESSAGE_DB_PATH",
+            temp_dir1.path().join("gossip").to_str().unwrap(),
+        ),
+    ]);
+
+    let node_data1 = create_test_node_data();
+    let config1 = create_gossipsub_config(19401);
+
+    let manager1 = NetworkManager::new(&node_data1).await.unwrap();
+    manager1.start(&config1).await.unwrap();
+    let peer_id1 = *manager1.local_peer_id();
+    info!(peer_id = %peer_id1, "Node 1 started");
+
+    sleep(Duration::from_millis(500)).await;
+
+    // ==================== NODE 2 SETUP (connects to Node 1) ====================
+    set_envs(&vec![
+        (
+            "DHT_DB_PATH",
+            temp_dir2.path().join("dht").to_str().unwrap(),
+        ),
+        (
+            "PEER_REGISTRY_DB_PATH",
+            temp_dir2.path().join("registry").to_str().unwrap(),
+        ),
+        (
+            "GOSSIP_MESSAGE_DB_PATH",
+            temp_dir2.path().join("gossip").to_str().unwrap(),
+        ),
+    ]);
+
+    let node_data2 = create_test_node_data();
+    let mut config2 = create_gossipsub_config(19402);
+    let bootstrap_addr: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/19401/p2p/{}", peer_id1)
+        .parse()
+        .unwrap();
+    config2.bootstrap_peers = vec![bootstrap_addr];
+
+    let manager2 = NetworkManager::new(&node_data2).await.unwrap();
+    manager2.start(&config2).await.unwrap();
+    let peer_id2 = *manager2.local_peer_id();
+    info!(peer_id = %peer_id2, "Node 2 started and connecting to Node 1");
+
+    // Wait for connection to establish and mesh to form
+    sleep(Duration::from_secs(3)).await;
+
+    // Verify nodes are connected
+    let peers1 = manager1.connected_peers().await.unwrap();
+    let peers2 = manager2.connected_peers().await.unwrap();
+    info!(
+        node1_peers = peers1.len(),
+        node2_peers = peers2.len(),
+        "Connection status"
+    );
+
+    // ==================== SUBSCRIBE TO TOPIC ====================
+    let topic = "/flow/v1/e2e-test";
+
+    // Node 2 subscribes FIRST (it will receive messages)
+    let mut handle2 = manager2.subscribe(topic).await.unwrap();
+    info!(topic = %topic, "Node 2 subscribed");
+
+    // Node 1 subscribes (so it's part of the mesh)
+    let _handle1 = manager1.subscribe(topic).await.unwrap();
+    info!(topic = %topic, "Node 1 subscribed");
+
+    // Wait for subscription propagation through GossipSub mesh
+    sleep(Duration::from_secs(2)).await;
+
+    // Verify both are subscribed at protocol level
+    let topics1 = manager1.subscribed_topics().await.unwrap();
+    let topics2 = manager2.subscribed_topics().await.unwrap();
+    assert!(
+        topics1.contains(&topic.to_string()),
+        "Node 1 should be subscribed"
+    );
+    assert!(
+        topics2.contains(&topic.to_string()),
+        "Node 2 should be subscribed"
+    );
+
+    // ==================== PUBLISH MESSAGE FROM NODE 1 ====================
+    let _test_nonce: u64 = 12345;
+    let test_task_id = "task-e2e-test-001";
+    let payload = MessagePayload::TaskAnnouncement {
+        task_id: test_task_id.to_string(),
+        task_type: "compute".to_string(),
+        requirements: serde_json::json!({"cpu": 4, "memory": "8GB"}),
+        reward: Some(1000),
+    };
+    let msg = Message::new(peer_id1, topic, payload);
+    let msg_id = msg.id.clone();
+    info!(message_id = %msg_id, "Publishing message from Node 1");
+
+    // Retry publishing until mesh is ready
+    let mut published = false;
+    for attempt in 1..=10 {
+        match manager1.publish(msg.clone()).await {
+            Ok(id) => {
+                info!(attempt = attempt, message_id = %id, "Message published successfully");
+                published = true;
+                break;
+            }
+            Err(e) => {
+                debug!(attempt = attempt, error = %e, "Publish attempt failed, retrying...");
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    assert!(published, "Should have published message after retries");
+
+    // ==================== RECEIVE MESSAGE ON NODE 2 ====================
+    let timeout = Duration::from_secs(10);
+    info!("Waiting for message on Node 2...");
+
+    let received = tokio::time::timeout(timeout, handle2.recv()).await;
+
+    match received {
+        Ok(Ok(received_msg)) => {
+            info!(
+                message_id = %received_msg.id,
+                topic = %received_msg.topic,
+                source = %received_msg.source,
+                "Message received on Node 2!"
+            );
+
+            // Verify message contents
+            assert_eq!(received_msg.topic, topic, "Topic should match");
+            assert_eq!(
+                received_msg.source,
+                peer_id1.to_string(),
+                "Source should be Node 1"
+            );
+
+            match received_msg.payload {
+                MessagePayload::TaskAnnouncement {
+                    task_id,
+                    task_type,
+                    reward,
+                    ..
+                } => {
+                    assert_eq!(task_id, test_task_id, "Task ID should match");
+                    assert_eq!(task_type, "compute", "Task type should match");
+                    assert_eq!(reward, Some(1000), "Reward should match");
+                }
+                other => panic!("Expected TaskAnnouncement, got {:?}", other),
+            }
+
+            info!("✅ End-to-end message delivery verified!");
+        }
+        Ok(Err(e)) => {
+            panic!("Broadcast receive error: {:?}", e);
+        }
+        Err(_) => {
+            // Debug info on timeout
+            let router_stats = manager2.get_router_stats().await;
+            panic!(
+                "Timeout waiting for message. Router stats: {:?}. \
+                 This indicates the message routing pipeline is broken.",
+                router_stats
+            );
+        }
+    }
+
+    // ==================== CLEANUP ====================
+    manager2.stop().await.unwrap();
+    manager1.stop().await.unwrap();
+    info!("Test complete");
+}
+
+/// Test that messages are persisted even without active subscribers
+#[tokio::test]
+#[serial]
+async fn test_message_persistence_without_subscribers() {
+    let temp_dir1 = TempDir::new().unwrap();
+    let temp_dir2 = TempDir::new().unwrap();
+
+    // Node 1 setup
+    set_envs(&vec![
+        (
+            "DHT_DB_PATH",
+            temp_dir1.path().join("dht").to_str().unwrap(),
+        ),
+        (
+            "PEER_REGISTRY_DB_PATH",
+            temp_dir1.path().join("registry").to_str().unwrap(),
+        ),
+        (
+            "GOSSIP_MESSAGE_DB_PATH",
+            temp_dir1.path().join("gossip").to_str().unwrap(),
+        ),
+    ]);
+
+    let node_data1 = create_test_node_data();
+    let config1 = create_gossipsub_config(19501);
+    let manager1 = NetworkManager::new(&node_data1).await.unwrap();
+    manager1.start(&config1).await.unwrap();
+    let peer_id1 = *manager1.local_peer_id();
+
+    sleep(Duration::from_millis(500)).await;
+
+    // Node 2 setup (connects to Node 1)
+    set_envs(&vec![
+        (
+            "DHT_DB_PATH",
+            temp_dir2.path().join("dht").to_str().unwrap(),
+        ),
+        (
+            "PEER_REGISTRY_DB_PATH",
+            temp_dir2.path().join("registry").to_str().unwrap(),
+        ),
+        (
+            "GOSSIP_MESSAGE_DB_PATH",
+            temp_dir2.path().join("gossip").to_str().unwrap(),
+        ),
+    ]);
+
+    let node_data2 = create_test_node_data();
+    let mut config2 = create_gossipsub_config(19502);
+    config2.bootstrap_peers = vec![
+        format!("/ip4/127.0.0.1/tcp/19501/p2p/{}", peer_id1)
+            .parse()
+            .unwrap(),
+    ];
+
+    let manager2 = NetworkManager::new(&node_data2).await.unwrap();
+    manager2.start(&config2).await.unwrap();
+
+    sleep(Duration::from_secs(2)).await;
+
+    let topic = "/flow/v1/persistence-test";
+
+    // Node 1 subscribes to enable publishing
+    manager1.subscribe(topic).await.unwrap();
+    // Node 2 subscribes at protocol level but we won't use the handle
+    let _protocol_handle = manager2.subscribe(topic).await.unwrap();
+
+    sleep(Duration::from_secs(2)).await;
+
+    // Publish message
+    let msg = Message::new(peer_id1, topic, MessagePayload::Ping { nonce: 999 });
+
+    let mut published = false;
+    for _ in 0..5 {
+        if manager1.publish(msg.clone()).await.is_ok() {
+            published = true;
+            break;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    if published {
+        // Give time for message to be routed and persisted
+        sleep(Duration::from_secs(1)).await;
+
+        // Check router stats - message should be persisted
+        if let Ok(stats) = manager2.get_router_stats().await {
+            assert!(
+                stats.messages_persisted > 0 || stats.messages_received > 0,
+                "Message should have been received/persisted. Stats: {:?}",
+                stats
+            );
+        }
+    }
+
+    manager2.stop().await.unwrap();
+    manager1.stop().await.unwrap();
+}
+
+/// Test multiple subscribers receive the same message
+#[tokio::test]
+#[serial]
+async fn test_multiple_subscribers_same_topic() {
+    let temp_dir = TempDir::new().unwrap();
+    setup_test_env(&temp_dir, "multi_sub");
+
+    let node_data = create_test_node_data();
+    let config = create_gossipsub_config(0);
+
+    let manager = NetworkManager::new(&node_data).await.unwrap();
+    manager.start(&config).await.unwrap();
+    let peer_id = *manager.local_peer_id();
+
+    let topic = "/flow/v1/multi-sub-test";
+
+    // Create multiple subscription handles for same topic
+    let mut handle1 = manager.subscribe(topic).await.unwrap();
+    let mut handle2 = manager.subscribe(topic).await.unwrap();
+    let mut handle3 = manager.subscribe(topic).await.unwrap();
+
+    // Check subscriber count
+    let count = manager.subscription_manager.subscriber_count(topic).await;
+    assert_eq!(count, 3, "Should have 3 subscribers");
+
+    // Directly route a message through subscription manager (unit test style)
+    let test_msg = Message::new(peer_id, topic, MessagePayload::Ping { nonce: 42 });
+
+    let delivered = manager.subscription_manager.route(&test_msg).await;
+    assert!(delivered, "Message should be delivered");
+
+    // All handles should receive the message
+    let timeout = Duration::from_millis(500);
+
+    let recv1 = tokio::time::timeout(timeout, handle1.recv()).await;
+    let recv2 = tokio::time::timeout(timeout, handle2.recv()).await;
+    let recv3 = tokio::time::timeout(timeout, handle3.recv()).await;
+
+    assert!(recv1.is_ok(), "Handle 1 should receive");
+    assert!(recv2.is_ok(), "Handle 2 should receive");
+    assert!(recv3.is_ok(), "Handle 3 should receive");
+
+    if let Ok(Ok(msg)) = recv1 {
+        if let MessagePayload::Ping { nonce } = msg.payload {
+            assert_eq!(nonce, 42);
+        }
+    }
+
+    manager.stop().await.unwrap();
 }

@@ -124,7 +124,7 @@ impl TopicSubscriptionManager {
 
     /// Route a message to its topic channel
     /// Returns true if message was delivered to at least one subscriber
-    pub async fn route(&self, message: Message) -> bool {
+    pub async fn route(&self, message: &Message) -> bool {
         let channels = self.channels.read().await;
 
         if let Some(channel) = channels.get(&message.topic) {
@@ -239,7 +239,7 @@ mod tests {
 
         let msg = Message::new(test_peer_id(), topic, MessagePayload::Ping { nonce: 123 });
 
-        let routed = manager.route(msg.clone()).await;
+        let routed = manager.route(&msg).await;
         assert!(routed);
 
         let received = handle.try_recv().unwrap();
@@ -256,7 +256,7 @@ mod tests {
 
         let msg = Message::new(test_peer_id(), topic, MessagePayload::Ping { nonce: 456 });
 
-        manager.route(msg.clone()).await;
+        manager.route(&msg).await;
 
         // Both should receive
         assert_eq!(h1.try_recv().unwrap().id, msg.id);
@@ -275,7 +275,7 @@ mod tests {
             MessagePayload::Ping { nonce: 1 },
         );
 
-        let routed = manager.route(msg).await;
+        let routed = manager.route(&msg).await;
         assert!(!routed); // No subscribers for topic-b
     }
 }

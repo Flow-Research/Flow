@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::bootstrap::init::NodeData;
 use crate::modules::ai::pipeline_manager::PipelineManager;
+use crate::modules::network::config::NetworkConfig;
 use crate::modules::network::manager::NetworkManager;
 use crate::modules::network::peer_registry::{NetworkStats, PeerInfo};
 use crate::modules::ssi::webauthn;
@@ -87,6 +88,26 @@ impl Node {
     /// Get network statistics
     pub async fn network_stats(&self) -> Result<NetworkStats, AppError> {
         self.network_manager.network_stats().await
+    }
+
+    /// Check if network is currently running
+    pub async fn is_network_running(&self) -> bool {
+        self.network_manager.is_running().await
+    }
+
+    /// Start the network with the given configuration
+    pub async fn start_network(&self, config: &NetworkConfig) -> Result<(), AppError> {
+        self.network_manager.start(config).await
+    }
+
+    /// Stop the network gracefully
+    pub async fn stop_network(&self) -> Result<(), AppError> {
+        self.network_manager.stop().await
+    }
+
+    /// Get list of subscribed GossipSub topics
+    pub async fn subscribed_topics(&self) -> Result<Vec<String>, AppError> {
+        self.network_manager.subscribed_topics().await
     }
 
     pub async fn create_space(&self, dir: &str) -> Result<(), AppError> {

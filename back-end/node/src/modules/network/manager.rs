@@ -3,7 +3,7 @@ use crate::modules::network::behaviour::FlowBehaviourEvent;
 use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
 use crate::modules::network::gossipsub::{
     GossipSubConfig, Message, MessagePayload, MessageRouter, MessageStore, MessageStoreConfig,
-    SubscriptionHandle, Topic, TopicSubscriptionManager,
+    RouterStats, SubscriptionHandle, Topic, TopicSubscriptionManager,
 };
 use crate::modules::network::peer_registry::{
     ConnectionDirection, DiscoverySource, NetworkStats, PeerInfo,
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Result of bootstrap operation
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ pub struct NetworkManager {
     message_router: Arc<MessageRouter>,
 
     /// Subscription manager (shared with router)
-    subscription_manager: Arc<TopicSubscriptionManager>,
+    pub subscription_manager: Arc<TopicSubscriptionManager>,
 }
 
 /// Commands sent to the NetworkManager event loop
@@ -192,8 +192,8 @@ struct NetworkEventLoop {
     /// Whether initial bootstrap has been triggered
     bootstrap_initiated: bool,
 
-    /// Channel for broadcasting incoming messages
-    message_tx: mpsc::UnboundedSender<Message>,
+    /// Message router for persisting and delivering incoming messages
+    message_router: Arc<MessageRouter>,
 
     /// GossipSub configuration for message validation
     gossipsub_config: GossipSubConfig,
@@ -354,7 +354,8 @@ impl NetworkManager {
         let listen_addr = Self::resolve_listen_address(config)?;
         let swarm = self.build_configured_swarm(config).await?;
         let command_rx = self.take_command_receiver().await?;
-        let event_loop = self.create_event_loop(swarm, command_rx, config)?;
+        let event_loop =
+            self.create_event_loop(swarm, command_rx, config, Arc::clone(&self.message_router))?;
 
         // 3. Start listening and spawn
         let handle = self.spawn_event_loop(event_loop, listen_addr).await?;
@@ -411,6 +412,7 @@ impl NetworkManager {
         swarm: Swarm<FlowBehaviour>,
         command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
         config: &NetworkConfig,
+        message_router: Arc<MessageRouter>,
     ) -> Result<NetworkEventLoop, AppError> {
         let peer_registry_config = PeerRegistryConfig::from_env();
         let mut persistent_registry =
@@ -433,9 +435,6 @@ impl NetworkManager {
             );
         }
 
-        // Create message channel for GossipSub incoming messages
-        let (message_tx, _message_rx) = mpsc::unbounded_channel();
-
         Ok(NetworkEventLoop {
             swarm,
             command_rx,
@@ -448,7 +447,7 @@ impl NetworkManager {
             bootstrap_peer_ids,
             bootstrap_config: config.bootstrap.clone(),
             bootstrap_initiated: false,
-            message_tx,
+            message_router,
             gossipsub_config: config.gossipsub.clone(),
         })
     }
@@ -829,13 +828,15 @@ impl NetworkManager {
         self.subscription_manager.has_subscribers(topic).await
     }
 
-    /// Get a receiver for incoming messages
-    ///
-    /// Note: Call this before start() to receive messages from the beginning
-    pub fn message_receiver(&self) -> mpsc::UnboundedReceiver<Message> {
-        // This would need to be set up during construction
-        // For now, this is a placeholder
-        todo!("Implement message receiver channel setup")
+    /// Get router statistics for debugging/monitoring
+    pub async fn get_router_stats(&self) -> Result<RouterStats, AppError> {
+        Ok(self.message_router.stats().await)
+    }
+
+    /// Check if the network manager is currently running
+    pub async fn is_running(&self) -> bool {
+        let handle_guard = self.event_loop_handle.lock().await;
+        handle_guard.is_some()
     }
 }
 
@@ -1528,7 +1529,8 @@ impl NetworkEventLoop {
                     source = %propagation_source,
                     message_id = %message_id,
                     topic = %message.topic,
-                    "Received GossipSub message"
+                    data_len = message.data.len(),
+                    "GossipSub message received"
                 );
 
                 // Deserialize and validate
@@ -1555,13 +1557,40 @@ impl NetworkEventLoop {
                             topic = %flow_msg.topic,
                             source = %flow_msg.source,
                             payload_type = ?std::mem::discriminant(&flow_msg.payload),
-                            "Valid message received"
+                            "Valid message received, routing to subscribers"
                         );
 
-                        // Broadcast to subscribers
-                        if self.message_tx.send(flow_msg).is_err() {
-                            debug!("No message receivers");
-                        }
+                        // Route via MessageRouter (persists + delivers to subscribers)
+                        let router = Arc::clone(&self.message_router);
+                        let msg_id = flow_msg.id.clone();
+                        let msg_topic = flow_msg.topic.clone();
+
+                        tokio::spawn(async move {
+                            match router.route(flow_msg).await {
+                                Ok(delivered) => {
+                                    if delivered {
+                                        debug!(
+                                            message_id = %msg_id,
+                                            topic = %msg_topic,
+                                            "Message delivered to subscribers"
+                                        );
+                                    } else {
+                                        debug!(
+                                            message_id = %msg_id,
+                                            topic = %msg_topic,
+                                            "Message persisted but no active subscribers"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        message_id = %msg_id,
+                                        error = %e,
+                                        "Failed to route message"
+                                    );
+                                }
+                            }
+                        });
                     }
                     Err(e) => {
                         warn!(
