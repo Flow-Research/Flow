@@ -197,6 +197,9 @@ struct NetworkEventLoop {
 
     /// GossipSub configuration for message validation
     gossipsub_config: GossipSubConfig,
+
+    /// Connections rejected due to limits - don't decrement when they close
+    rejected_connections: HashSet<PeerId>,
 }
 
 impl NetworkManager {
@@ -449,6 +452,7 @@ impl NetworkManager {
             bootstrap_initiated: false,
             message_router,
             gossipsub_config: config.gossipsub.clone(),
+            rejected_connections: HashSet::new(),
         })
     }
 
@@ -1111,23 +1115,19 @@ impl NetworkEventLoop {
                 established_in,
                 ..
             } => {
-                // Increment connection counter FIRST
-                self.active_connections += 1;
-
                 let direction = if endpoint.is_dialer() {
                     ConnectionDirection::Outbound
                 } else {
                     ConnectionDirection::Inbound
                 };
 
-                // Check limits AFTER incrementing (for both inbound and outbound if needed)
                 let should_disconnect = if self.connection_limits.max_connections == 0 {
                     false // Unlimited
                 } else {
                     match self.connection_limits.policy {
                         ConnectionLimitPolicy::Strict => {
                             // Strict: reject ANY connection over max
-                            self.active_connections > self.connection_limits.max_connections
+                            self.active_connections >= self.connection_limits.max_connections
                         }
                         ConnectionLimitPolicy::PreferOutbound => {
                             // PreferOutbound: only reject INBOUND over inbound_limit
@@ -1137,16 +1137,18 @@ impl NetworkEventLoop {
                                     .connection_limits
                                     .max_connections
                                     .saturating_sub(self.connection_limits.reserved_outbound);
-                                self.active_connections > inbound_limit
+                                self.active_connections >= inbound_limit
                             } else {
                                 // Outbound: only check against total max
-                                self.active_connections > self.connection_limits.max_connections
+                                self.active_connections >= self.connection_limits.max_connections
                             }
                         }
                     }
                 };
 
                 if should_disconnect {
+                    self.rejected_connections.insert(peer_id);
+
                     warn!(
                         active_connections = self.active_connections,
                         max_connections = self.connection_limits.max_connections,
@@ -1162,6 +1164,9 @@ impl NetworkEventLoop {
                     // Don't process further
                     return;
                 }
+
+                // Increment connection counter
+                self.active_connections += 1;
 
                 // Determine discovery source
                 // For outbound connections, we look up how we discovered them
@@ -1195,7 +1200,12 @@ impl NetworkEventLoop {
             }
 
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                self.active_connections = self.active_connections.saturating_sub(1);
+                // Only decrement if this wasn't a rejected connection
+                if self.rejected_connections.remove(&peer_id) {
+                    debug!(peer_id = %peer_id, "Ignoring close for rejected connection");
+                } else {
+                    self.active_connections = self.active_connections.saturating_sub(1);
+                }
 
                 debug!(
                     active_connections = self.active_connections,

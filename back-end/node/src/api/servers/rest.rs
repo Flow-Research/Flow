@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 
-use crate::{api::servers::app_state::AppState, bootstrap::config::Config};
+use crate::{
+    api::{
+        dto::{DialPeerRequest, NetworkStatusResponse, PeerInfoResponse, PeersResponse},
+        servers::app_state::AppState,
+    },
+    bootstrap::config::Config,
+    modules::network::config::NetworkConfig,
+};
 use axum::{
     Router,
     extract::{Query, State},
@@ -11,7 +18,7 @@ use axum::{
 use errors::AppError;
 use serde_json::{Value, json};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 /// Build the router with all routes configured
@@ -58,6 +65,26 @@ pub fn build_router(app_state: AppState) -> Router {
         .route(
             format!("{}/spaces/search", api_base).as_str(),
             get(query_space),
+        )
+        .route(
+            format!("{}/network/status", api_base).as_str(),
+            get(get_network_status),
+        )
+        .route(
+            format!("{}/network/peers", api_base).as_str(),
+            get(get_network_peers),
+        )
+        .route(
+            format!("{}/network/start", api_base).as_str(),
+            post(start_network),
+        )
+        .route(
+            format!("{}/network/stop", api_base).as_str(),
+            post(stop_network),
+        )
+        .route(
+            format!("{}/network/dial", api_base).as_str(),
+            post(dial_peer),
         )
         .with_state(app_state)
         .layer(cors)
@@ -242,4 +269,176 @@ async fn query_space(
 
 async fn health_check() -> Json<Value> {
     Json(json!({"status": "healthy", "timestamp": chrono::Utc::now()}))
+}
+
+// ==================== Network Handlers ====================
+
+/// GET /api/v1/network/status
+async fn get_network_status(
+    State(app_state): State<AppState>,
+) -> Result<Json<NetworkStatusResponse>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    let running = node.is_network_running().await;
+    let peer_id = node.peer_id();
+
+    let (connected_peers, known_peers, uptime_secs, subscribed_topics) = if running {
+        match node.network_stats().await {
+            Ok(stats) => {
+                let topics = node.subscribed_topics().await.unwrap_or_default();
+                (
+                    stats.connected_peers,
+                    stats.known_peers,
+                    Some(stats.uptime_secs),
+                    topics,
+                )
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to get network stats");
+                (0, 0, None, vec![])
+            }
+        }
+    } else {
+        (0, 0, None, vec![])
+    };
+
+    info!(
+        running = running,
+        peer_id = %peer_id,
+        connected_peers = connected_peers,
+        "Network status requested"
+    );
+
+    Ok(Json(NetworkStatusResponse {
+        running,
+        peer_id,
+        connected_peers,
+        known_peers,
+        uptime_secs,
+        subscribed_topics,
+    }))
+}
+
+async fn get_network_peers(
+    State(app_state): State<AppState>,
+) -> Result<Json<PeersResponse>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    if !node.is_network_running().await {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Network is not running".to_string(),
+        ));
+    }
+
+    let peers = node
+        .connected_peers()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let peer_responses: Vec<PeerInfoResponse> = peers
+        .into_iter()
+        .map(|p| PeerInfoResponse {
+            peer_id: p.peer_id.to_string(),
+            addresses: p.addresses.iter().map(|a| a.to_string()).collect(),
+            connection_count: p.connection_count,
+            direction: format!("{:?}", p.connection_direction),
+            discovery_source: format!("{:?}", p.discovery_source),
+        })
+        .collect();
+
+    let count = peer_responses.len();
+    info!(peer_count = count, "Peers list requested");
+
+    Ok(Json(PeersResponse {
+        count,
+        peers: peer_responses,
+    }))
+}
+
+async fn start_network(
+    State(app_state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    if node.is_network_running().await {
+        return Err((
+            StatusCode::CONFLICT,
+            "Network is already running".to_string(),
+        ));
+    }
+
+    let config = NetworkConfig::from_env();
+
+    node.start_network(&config).await.map_err(|e| {
+        error!(error = %e, "Failed to start network");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    // Broadcast event using existing infrastructure
+    node.broadcast_network_event(
+        "NetworkStarted",
+        serde_json::json!({ "peer_id": node.peer_id() }),
+    )
+    .await;
+
+    info!(peer_id = %node.peer_id(), "Network started via API");
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "Network started successfully",
+        "peer_id": node.peer_id()
+    })))
+}
+
+async fn stop_network(
+    State(app_state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    if !node.is_network_running().await {
+        return Err((StatusCode::CONFLICT, "Network is not running".to_string()));
+    }
+
+    node.stop_network().await.map_err(|e| {
+        error!(error = %e, "Failed to stop network");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    // Broadcast event using existing infrastructure
+    node.broadcast_network_event("NetworkStopped", serde_json::json!({}))
+        .await;
+
+    info!("Network stopped via API");
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "Network stopped successfully"
+    })))
+}
+
+async fn dial_peer(
+    State(app_state): State<AppState>,
+    Json(payload): Json<DialPeerRequest>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    if !node.is_network_running().await {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Network is not running".to_string(),
+        ));
+    }
+
+    node.dial_peer(&payload.address).await.map_err(|e| {
+        warn!(address = %payload.address, error = %e, "Failed to dial peer");
+        (StatusCode::BAD_REQUEST, e.to_string())
+    })?;
+
+    info!(address = %payload.address, "Dialed peer via API");
+
+    Ok(Json(json!({
+        "success": true,
+        "message": format!("Dialing peer at {}", payload.address)
+    })))
 }
