@@ -833,13 +833,10 @@ impl NetworkManager {
         Ok(self.message_router.stats().await)
     }
 
-    /// Get a receiver for incoming messages
-    ///
-    /// Note: Call this before start() to receive messages from the beginning
-    pub fn message_receiver(&self) -> mpsc::UnboundedReceiver<Message> {
-        // This would need to be set up during construction
-        // For now, this is a placeholder
-        todo!("Implement message receiver channel setup")
+    /// Check if the network manager is currently running
+    pub async fn is_running(&self) -> bool {
+        let handle_guard = self.event_loop_handle.lock().await;
+        handle_guard.is_some()
     }
 }
 

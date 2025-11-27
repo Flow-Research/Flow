@@ -1,11 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use crate::bootstrap::init::remove_envs;
+    use crate::bootstrap::init::{remove_env, remove_envs, set_env, set_envs};
     use node::modules::network::config::{
         ConnectionLimitPolicy, ConnectionLimits, MdnsConfig, NetworkConfig,
     };
     use serial_test::serial;
-    use std::env;
 
     #[test]
     fn test_default_config() {
@@ -39,16 +38,12 @@ mod tests {
     #[test]
     #[serial]
     fn test_from_env_mdns_disabled() {
-        unsafe {
-            env::set_var("NETWORK_MDNS_ENABLED", "false");
-        }
+        set_env("NETWORK_MDNS_ENABLED", "false");
 
         let config = NetworkConfig::from_env();
         assert!(!config.mdns.enabled);
 
-        unsafe {
-            env::remove_var("NETWORK_MDNS_ENABLED");
-        }
+        remove_env("NETWORK_MDNS_ENABLED");
     }
 
     #[test]
@@ -134,19 +129,16 @@ mod tests {
 
     #[test]
     fn test_network_config_from_env_connection_limits() {
-        unsafe {
-            std::env::set_var("NETWORK_MAX_CONNECTIONS", "50");
-            std::env::set_var("NETWORK_RESERVED_OUTBOUND", "10");
-        }
+        set_envs(&vec![
+            ("NETWORK_MAX_CONNECTIONS", "50"),
+            ("NETWORK_RESERVED_OUTBOUND", "10"),
+        ]);
 
         let config = NetworkConfig::from_env();
 
         assert_eq!(config.connection_limits.max_connections, 50);
         assert_eq!(config.connection_limits.reserved_outbound, 10);
 
-        unsafe {
-            std::env::remove_var("NETWORK_MAX_CONNECTIONS");
-            std::env::remove_var("NETWORK_RESERVED_OUTBOUND");
-        }
+        remove_envs(&["NETWORK_MAX_CONNECTIONS", "NETWORK_RESERVED_OUTBOUND"]);
     }
 }

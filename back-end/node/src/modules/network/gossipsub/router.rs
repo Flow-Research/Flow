@@ -145,7 +145,7 @@ impl MessageRouter {
         }
 
         // Route to subscribers
-        let delivered = self.subscriptions.route(message.clone()).await;
+        let delivered = self.subscriptions.route(&message).await;
 
         if delivered {
             let mut stats = self.stats.write().await;

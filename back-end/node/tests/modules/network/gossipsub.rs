@@ -621,6 +621,8 @@ async fn test_three_node_mesh_propagation() {
     let mesh_peers2 = manager2.mesh_peers(topic).await.unwrap_or_default();
     let mesh_peers3 = manager3.mesh_peers(topic).await.unwrap_or_default();
 
+    sleep(Duration::from_secs(2)).await;
+
     println!(
         "Mesh sizes: Node1={}, Node2={}, Node3={}",
         mesh_peers1.len(),
@@ -1539,7 +1541,7 @@ async fn test_multiple_subscribers_same_topic() {
     // Directly route a message through subscription manager (unit test style)
     let test_msg = Message::new(peer_id, topic, MessagePayload::Ping { nonce: 42 });
 
-    let delivered = manager.subscription_manager.route(test_msg.clone()).await;
+    let delivered = manager.subscription_manager.route(&test_msg).await;
     assert!(delivered, "Message should be delivered");
 
     // All handles should receive the message
