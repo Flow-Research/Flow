@@ -8,7 +8,7 @@ Flow is a decentralized automation network that turns goals into verifiable jobs
 
 The core idea is that each user or organisation controls a portable, Knowledge Base, anchored to their identity rather than any single app. Different tools and experiences are built on top of this shared base.
 
-Users can choose to share specific parts of their Knowledge Base with other users and agents on the network. Access, usage, and changes are enforced and recorded by the network itself, using cryptographic signatures and clear policies.
+Users can share specific parts of their Knowledge Base with other users and agents on the network. Access, usage, and changes are enforced and recorded by the network itself, using cryptographic signatures and clear policies.
 
 Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge under their own rules. Personal knowledge bases, agents, and programmable incentives create a market for skills and information that anyone can inspect and build on.
 
