@@ -17,7 +17,7 @@ Flow is not a single app or API. It is a network of protocols, services, and age
 ## Core Principles
 
 1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
-2.  **Capability-Based Access:** Authentication and authorization is decentralized. Permissions are based on Verifiable Credentials and Capabilities.
+2.  **Capability-Based Access:** Authentication and authorization are decentralized. Permissions are based on Verifiable Credentials and Capabilities.
 3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
 4.  **Peer-to-Peer networking:** Agents and users connect and coordinate via a decentralized network.
 5.  **Decentralized Execution:** Execution is local-first, edge-native, cloud-optional. Workflows can be distributed and executed in a decentralized manner.
