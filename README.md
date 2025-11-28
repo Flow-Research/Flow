@@ -6,15 +6,15 @@ Flow is a decentralized automation network that turns goals into verifiable jobs
 
 ![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
 
-The core idea is that each user/organisation controls a Knowledge Base. Different experiences and tools are built on top of this knowledge base.
+The core idea is that each user or organisation controls a portable, Knowledge Base, anchored to their identity rather than any single app. Different tools and experiences are built on top of this shared base.
 
-Users can share parts of their data with other users and agents on the network. The network enforces access control rules. 
+Users can choose to share specific parts of their Knowledge Base with other users and agents on the network. Access, usage, and changes are enforced and recorded by the network itself, using cryptographic signatures and clear policies.
 
-Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge over the internet; a network where personal knowledge bases, agents, and incentives create an emergent market for skills and information.
+Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge under their own rules. Personal knowledge bases, agents, and programmable incentives create a market for skills and information that anyone can inspect and build on.
 
-The value of the network grows with each verified, high-quality contribution that others can safely reuse. Permissions and payouts are handled automatically.
+The value of the network grows with each verified, high-quality contribution that others can safely reuse. Permissions, provenance, and payouts are handled automatically by transparent rules.
 
-As users and agents co-create and share knowledge, and as contributions are evaluated and rewarded, an economy can emerge across the network; one designed to benefit its participants.
+As users and agents co-create and share knowledge, and as contributions are evaluated and rewarded by the network, a new kind of economy can emerge; one where value flows more directly to the people and agents who create it.
 
 
 ## Core Principles
