@@ -1,18 +1,21 @@
 # Flow Architecture Overview
 
-Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data locally or in trusted environments, agents execute with signed events and receipts, state converges via sync, and programmable incentives settle contributions automatically with provenance and privacy by default.
+Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data in private, trusted environments; agents execute with signed events and receipts; state converges via sync; and programmable incentives settle contributions automatically, with provenance and privacy by default.
 
 ## Concept Diagram
 
 ![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
 
-The core idea is that each user/organisation has a Knowledge Base they control. Different experiences and tools are built on top of this knowledge base.
+The core idea is that each user/organisation controls a Knowledge Base. Different experiences and tools are built on top of this knowledge base.
 
-Users can share parts of their data with other people and agents on the network. The network enforces access rules. Permissions and payouts are handled automatically.
-
-The value of the network grows with each verified, high-quality contribution that others can safely reuse. With users and agents co-creating and sharing knowledge, and with contributions evaluated and rewarded, an economy can emerge over the network.
+Users can share parts of their data with other users and agents on the network. The network enforces access rules. 
 
 Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge over the internet; a network where personal knowledge bases, agents, and incentives create an emergent market for skills and information.
+
+The value of the network grows with each verified, high-quality contribution that others can safely reuse. Permissions and payouts are handled automatically.
+
+As users and agents co-create and share knowledge, and as contributions are evaluated and rewarded, an economy can emerge across the network; one designed to benefit its participants.
+
 
 ## Core Principles
 
