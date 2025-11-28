@@ -10,9 +10,9 @@ The core idea is that each user/organisation has a Knowledge Base they control. 
 
 Users can share parts of their data with other people and agents on the network. The network enforces access rules. Permissions and payouts are handled automatically.
 
-The value of the network grows with each verified, high-quality contribution that others can safely reuse. With users and agents co-creating and sharing knowledge, and with contributions being evaluated and rewarded, an economy can emerge over the network.
+The value of the network grows with each verified, high-quality contribution that others can safely reuse. With users and agents co-creating and sharing knowledge, and with contributions evaluated and rewarded, an economy can emerge over the network.
 
-Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge over the internet.
+Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work and share knowledge over the internet; a network where personal knowledge bases, agents, and incentives create an emergent market for skills and information.
 
 ## Core Principles
 
@@ -35,7 +35,7 @@ Flow is not a single app or API. It is a network of protocols, services, and age
 6. [**MCP Layer**](./specs/06_mcp.md): Defines how external models/tools (via Model Context Protocol) interact with user content.
 7.  [**User Interface / UX Layer**](./specs/07_ui_ux_layer.md): Provides the means for users to interact with the system, manage agents, delegate tasks, etc.
 8.  [**Agent Layer**](./specs/08_agent_layer.md): Manages agent lifecycles (Sense→Learn→Reason→Predict→Act) and ensures their actions are explainable.
-9.  [**Execution Layer**](./specs/09_execution_layer.md): Handles the definition and running of workflows as Directed Acyclic Graphs (DAGs), managing signed state transitions.
+9.  [**Execution Layer**](./specs/09_execution_layer.md): Handles the definition and execution of workflows as graphs of steps, where each state change is cryptographically signed and verifiable.
 10.  [**Compute Layer**](./specs/10_compute_layer.md): Executes the actual computational tasks defined in the Execution Layer, potentially using various backends (local, distributed like Bacalhau) and supporting verifiable computation.
 11. [**Incentive Layer**](./specs/11_incentive_layer.md): Defines and manages programmable rewards and contribution tracking based on provenance data in the knowledge graph.
 
