@@ -12,8 +12,6 @@ Users can share specific parts of their Knowledge Base with other users and agen
 
 Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work, share knowledge, and be rewarded.
 
-As users and agents co-create and share knowledge, as contributions are evaluated and rewarded by the network, a new kind of economy can emerge; one where value flows more directly to the people and agents who create it.
-
 
 ## Core Principles
 
