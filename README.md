@@ -1,16 +1,16 @@
 # Flow Architecture Overview
 
-Flow is a decentralized automation network that turns goals into verifiable jobs across a peer compute marketplace. Users keep data in private, trusted environments; agents execute with signed events and receipts; state converges via sync; and programmable incentives settle contributions automatically, with provenance and privacy by default.
+Flow is a decentralized automation network where user-defined goals run as verifiable jobs across a peer compute and knowledge marketplace.
+
+Users keep their data in private environments they control. Agents execute jobs as chains of signed events and receipts, and the network keeps shared state in sync. Programmable incentives settle contributions automatically based on recorded provenance, while access rules help protect privacy.
 
 ## Concept Diagram
 
 ![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
 
-The core idea is that each user or organisation controls a portable, Knowledge Base, anchored to their identity rather than any single app. Tools and experiences are built on top of this knowledge base.
+At the core, each user or organisation controls a portable knowledge base, anchored to their identity rather than a single app. Tools and agents are built on top of this base. Users can share specific parts of their knowledge with other users and agents, with access, usage, and changes checked and logged using cryptographic signatures and clear policies.
 
-Users can share specific parts of their Knowledge Base with other users and agents on the network. Access, usage, and changes are enforced and recorded by the network itself, using cryptographic signatures and clear policies.
-
-Flow is not a single app or API. It is a network of protocols, services, and agents that work together to help people automate work, share knowledge, and be rewarded.
+Flow is not a single app or API, but a network of protocols, services, and agents that help people automate work, share knowledge, and earn from what they contribute.
 
 
 ## Core Principles
