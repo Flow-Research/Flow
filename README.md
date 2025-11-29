@@ -2,7 +2,7 @@
 
 Flow is a decentralized automation network where user-defined goals run as verifiable jobs across a peer compute and knowledge marketplace.
 
-Users keep their data in private environments they control. Agents execute jobs as chains of signed events and receipts, and the network keeps shared state in sync. Programmable incentives settle contributions automatically based on recorded provenance, while access rules help protect privacy.
+Users keep their data in private environments they control. Agents execute jobs with signed events and receipts. The network keeps the shared state in sync. Programmable incentives settle contributions automatically based on recorded provenance, while access rules help protect privacy.
 
 ## Concept Diagram
 
@@ -10,7 +10,7 @@ Users keep their data in private environments they control. Agents execute jobs 
 
 At the core, each user or organisation controls a portable knowledge base, anchored to their identity rather than a single app. Tools and agents are built on top of this base. Users can share specific parts of their knowledge with other users and agents, with access, usage, and changes checked and logged using cryptographic signatures and clear policies.
 
-Flow is not a single app or API, but a network of protocols, services, and agents that help people automate work, share knowledge, and earn from what they contribute.
+Flow is not a single app or API, but a network of protocols, services, and agents that help people automate work, share knowledge, and earn from their contributions.
 
 
 ## Core Principles
