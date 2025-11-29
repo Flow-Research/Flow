@@ -17,7 +17,7 @@ Flow is not a single app or API, but a network of protocols, services, and agent
 
 1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
 2.  **Capability-Based Access:** Authentication and authorization are decentralized. Permissions are based on Verifiable Credentials and Capabilities.
-3.  **Knowledge Graphs with Provenance:** Data is stored in schema-aware graphs tracking origin and trust.
+3.  **Knowledge graph and vector indexes with provenance** Flow maintains a shared knowledge graph and vector index across data stored in many systems, and ties every fact and embedding back to its source and history.
 4.  **Peer-to-Peer networking:** Agents and users connect and coordinate via a decentralized network.
 5.  **Decentralized Execution:** Execution is local-first, edge-native, cloud-optional. Workflows can be distributed and executed in a decentralized manner.
 6.  **Agent Explainability (SLRPA):** Agents operate on a Sense → Learn → Reason → Predict → Act cycle.
