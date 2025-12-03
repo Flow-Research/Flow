@@ -13,7 +13,7 @@ Architecture: Monorepo - Rust workspace (back-end) + TypeScript frontends (user-
 - All operations must work offline-first
 - Every state change is cryptographically verifiable
 - P2P networking via libp2p (not client-server)
-- DIDs for identity, UCANs for capabilities
+- DIDs for identity, capability based access control
 
 ### 2. Modularity & Clean Interfaces
 - Clear separation between layers (network, storage, business logic, API)
