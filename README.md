@@ -8,7 +8,7 @@ Users keep their data in private environments they control. Agents execute jobs 
 
 ![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
 
-At the core, each user or organisation controls a portable knowledge base, anchored to their identity rather than a single app. Tools and agents are built on top of this base. Users can share specific parts of their knowledge with other users and agents, with access, usage, and changes checked and logged using cryptographic signatures and clear policies.
+At the core, each user or organisation controls a portable knowledge base, anchored to their identity. Apps, tools, and agents are built on top of this base to provide experiences for users. Users can share specific parts of their data with other users and agents. Access, usage, and changes are checked and logged using cryptographic signatures and clear policies.
 
 Flow is not a single app or API, but a network of protocols, services, and agents that help people automate work, share knowledge, and earn from their contributions.
 
@@ -43,7 +43,7 @@ Flow is not a single app or API, but a network of protocols, services, and agent
 
 1.  Create and update your objects.
 2.  Everything is signed and secure using your digital ID.
-3.  Connect to the Flow network and find what you need.
+3.  Connect to the network and find what you need.
 4.  Start Agents that plug into your own knowledge and data.
 5.  Agents sense, learn, think, predict, and act on your behalf.
 6.  Their actions and results are recorded and checked.
