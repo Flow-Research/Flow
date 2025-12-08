@@ -303,7 +303,11 @@ impl NetworkManager {
             local_peer_id,
             &keypair,
             store,
-            config.mdns.enabled,
+            if config.mdns.enabled {
+                Some(&config.mdns)
+            } else {
+                None
+            },
             Some(&config.gossipsub),
         );
 
@@ -880,26 +884,26 @@ impl NetworkEventLoop {
 
         loop {
             tokio::select! {
-                // One-shot initial bootstrap trigger
-                _ = &mut bootstrap_delay, if !self.bootstrap_initiated => {
-                    self.execute_bootstrap();
-                }
+            // One-shot initial bootstrap trigger
+            _ = &mut bootstrap_delay, if !self.bootstrap_initiated => {
+                self.execute_bootstrap();
+            }
 
-                // Periodic retry of failed bootstrap peers
-                _ = retry_interval.tick(), if self.bootstrap_initiated && !self.bootstrap_peer_ids.is_empty() => {
-                    self.retry_bootstrap_peers();
-                }
+            // Periodic retry of failed bootstrap peers
+            _ = retry_interval.tick(), if self.bootstrap_initiated && !self.bootstrap_peer_ids.is_empty() => {
+                self.retry_bootstrap_peers();
+            }
 
-                // Handle Swarm events
-                event = self.swarm.select_next_some() => {
-                    self.handle_swarm_event(event).await;
-                }
+            // Handle Swarm events
+            event = self.swarm.select_next_some() => {
+                self.handle_swarm_event(event).await;
+            }
 
-                // Handle commands
-                Some(command) = self.command_rx.recv() => {
-                    if self.handle_command(command).await {
-                        break;
-                    }
+            // Handle commands
+            Some(command) = self.command_rx.recv() => {
+                if self.handle_command(command).await {
+                    break;
+                }
                 }
             }
         }

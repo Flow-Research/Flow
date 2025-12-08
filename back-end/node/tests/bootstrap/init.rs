@@ -202,7 +202,9 @@ async fn setup_test_network_manager(
 ) -> Result<Arc<NetworkManager>, Box<dyn std::error::Error>> {
     // Hold the lock across env var setting AND NetworkManager creation
     // This prevents parallel tests from overwriting each other's env vars
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Set environment variables for this test's unique paths
     setup_test_env_auto(temp_dir);

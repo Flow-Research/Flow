@@ -36,13 +36,14 @@ fn test_config_validation_with_valid_env() -> Result<(), Box<dyn std::error::Err
 fn test_config_applies_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let mut env = TempEnv::new();
 
-    // Only set required field
-    env.set("DATABASE_URL", "sqlite://test.db");
-
     // Clear optional fields
     env.remove("DB_MAX_CONNECTIONS");
     env.remove("REST_PORT");
     env.remove("KV_STORE_PATH");
+
+    // Only set required field
+    env.set("DATABASE_URL", "sqlite://test.db");
+    env.set("KV_STORE_PATH", "/tmp/flow-kv");
 
     let config = Config::from_env()?;
 

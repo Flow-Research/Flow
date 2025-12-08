@@ -273,7 +273,6 @@ async fn health_check() -> Json<Value> {
 
 // ==================== Network Handlers ====================
 
-/// GET /api/v1/network/status
 async fn get_network_status(
     State(app_state): State<AppState>,
 ) -> Result<Json<NetworkStatusResponse>, (StatusCode, String)> {
