@@ -3337,6 +3337,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+
+[[package]]
 name = "fastembed"
 version = "4.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7393,6 +7399,7 @@ dependencies = [
  "env_logger",
  "errors",
  "event",
+ "fastcdc",
  "fs4",
  "futures",
  "futures-util",

@@ -280,7 +280,13 @@ async fn test_mdns_does_not_dial_self() {
     let node_data = create_test_node_data();
     let config = create_test_network_config(0, true);
 
-    let manager = NetworkManager::new(&node_data).await.unwrap();
+    let manager = {
+        let _guard = crate::bootstrap::init::NETWORK_MANAGER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        setup_test_env_auto(&temp_dir);
+        NetworkManager::new(&node_data).await.unwrap()
+    };
     manager.start(&config).await.unwrap();
 
     // Wait for mDNS to potentially discover ourselves (shouldn't happen)

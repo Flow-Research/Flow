@@ -270,8 +270,13 @@ async fn test_end_to_end_registration_and_authentication() {
         public_key: vec![0u8; 32],
     };
 
-    let network_manager = NetworkManager::new(&node_data).await.unwrap();
-    let network_manager = Arc::new(network_manager);
+    let network_manager = {
+        let _guard = crate::bootstrap::init::NETWORK_MANAGER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::bootstrap::init::setup_test_env_auto(&temp_dir);
+        Arc::new(NetworkManager::new(&node_data).await.unwrap())
+    };
 
     let node = Node::new(
         node_data,
