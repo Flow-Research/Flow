@@ -192,4 +192,127 @@ mod tests {
             assert_eq!(c.offset, i.offset);
         }
     }
+
+    #[test]
+    fn test_fixed_chunker_single_byte_target() {
+        let chunker = FixedChunker::with_size(1);
+        let data = b"abc";
+
+        let chunks = chunker.chunk(data);
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].data, vec![b'a']);
+        assert_eq!(chunks[1].data, vec![b'b']);
+        assert_eq!(chunks[2].data, vec![b'c']);
+    }
+
+    #[test]
+    fn test_fixed_chunker_exactly_2x_target() {
+        let chunker = FixedChunker::with_size(5);
+        let data = b"1234567890";
+
+        let chunks = chunker.chunk(data);
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, b"12345".to_vec());
+        assert_eq!(chunks[1].data, b"67890".to_vec());
+    }
+
+    #[test]
+    fn test_fixed_chunker_single_byte_input() {
+        let chunker = FixedChunker::with_size(100);
+        let data = b"x";
+
+        let chunks = chunker.chunk(data);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, b"x".to_vec());
+        assert_eq!(chunks[0].offset, 0);
+    }
+
+    #[test]
+    fn test_fixed_chunker_all_byte_values() {
+        let chunker = FixedChunker::with_size(64);
+        let data: Vec<u8> = (0..=255).collect();
+
+        let chunks = chunker.chunk(&data);
+
+        // Verify reconstruction preserves all bytes
+        let reconstructed: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+        assert_eq!(reconstructed, data);
+    }
+
+    #[test]
+    fn test_fixed_chunker_name() {
+        let chunker = FixedChunker::with_size(100);
+        assert_eq!(chunker.name(), "fixed");
+    }
+
+    #[test]
+    fn test_fixed_chunker_config() {
+        let config = super::super::ChunkingConfig::new(50, 100, 200);
+        let chunker = FixedChunker::new(config);
+
+        assert_eq!(chunker.config().min_size, 50);
+        assert_eq!(chunker.config().target_size, 100);
+        assert_eq!(chunker.config().max_size, 200);
+    }
+
+    #[test]
+    fn test_fixed_chunker_sum_equals_input_size() {
+        let chunker = FixedChunker::with_size(77);
+        let data = vec![42u8; 1000];
+
+        let chunks = chunker.chunk(&data);
+        let total: usize = chunks.iter().map(|c| c.size()).sum();
+
+        assert_eq!(total, data.len());
+    }
+
+    #[test]
+    fn test_fixed_chunker_non_final_chunks_equal_target() {
+        let target_size = 100;
+        let chunker = FixedChunker::with_size(target_size);
+        let data = vec![42u8; 350];
+
+        let chunks = chunker.chunk(&data);
+
+        // All but last should be exactly target_size
+        for chunk in chunks.iter().take(chunks.len() - 1) {
+            assert_eq!(chunk.size(), target_size);
+        }
+        // Last can be smaller
+        assert!(chunks.last().unwrap().size() <= target_size);
+    }
+
+    #[test]
+    fn test_fixed_chunker_final_chunk_size_le_target() {
+        let target_size = 100;
+        let chunker = FixedChunker::with_size(target_size);
+        let data = vec![42u8; 250];
+
+        let chunks = chunker.chunk(&data);
+
+        assert!(chunks.last().unwrap().size() <= target_size);
+    }
+
+    #[test]
+    fn test_fixed_chunker_cids_match_content() {
+        let chunker = FixedChunker::with_size(10);
+        let data = b"hello worldhello world";
+
+        let chunks = chunker.chunk(data);
+
+        // First two chunks have same content "hello worl"
+        // so they should have same CID
+        let _cid1 = chunks[0].to_chunk_ref().cid;
+        let _cid2 = chunks[1].to_chunk_ref().cid;
+
+        // Actually they won't match because content is different
+        // "hello worl" vs "dhello wor"
+        // But same content DOES produce same CID:
+        let chunk_a = ChunkData::new(b"same".to_vec(), 0);
+        let chunk_b = ChunkData::new(b"same".to_vec(), 100);
+        assert_eq!(chunk_a.to_chunk_ref().cid, chunk_b.to_chunk_ref().cid);
+    }
 }

@@ -16,7 +16,9 @@ use crate::bootstrap::init::{NETWORK_MANAGER_LOCK, create_test_node_data, setup_
 #[tokio::test]
 #[serial]
 async fn test_tcp_transport_connection() {
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir1 = TempDir::new().unwrap();
     let temp_dir2 = TempDir::new().unwrap();
@@ -70,7 +72,9 @@ async fn test_tcp_transport_connection() {
 #[tokio::test]
 #[serial]
 async fn test_quic_transport_connection() {
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir1 = TempDir::new().unwrap();
     let temp_dir2 = TempDir::new().unwrap();
@@ -126,7 +130,9 @@ async fn test_quic_transport_connection() {
 async fn test_connection_limit_respected() {
     // Verifies that connection limits prevent resource exhaustion
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir = TempDir::new().unwrap();
     setup_test_env(&temp_dir, "nat_limits");
@@ -166,7 +172,9 @@ async fn test_connection_limit_respected() {
 async fn test_dial_specific_address() {
     // Tests ability to dial a specific multiaddress (simulates NAT hole punching scenario)
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir1 = TempDir::new().unwrap();
     let temp_dir2 = TempDir::new().unwrap();

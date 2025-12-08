@@ -80,7 +80,9 @@ async fn test_mdns_enabled_single_node() {
 #[serial]
 async fn test_mdns_two_nodes_discover_each_other() {
     // Acquire the global mutex before setting env vars and creating NetworkManager
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir1 = TempDir::new().expect("Failed to create temp dir 1");
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
@@ -101,7 +103,9 @@ async fn test_mdns_two_nodes_discover_each_other() {
     // Wait for node 1 to start advertising
     sleep(Duration::from_secs(1)).await;
 
-    let _guard2 = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard2 = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Setup node 2
     setup_test_env_auto(&temp_dir2);
@@ -163,7 +167,9 @@ async fn test_mdns_two_nodes_discover_each_other() {
 #[tokio::test]
 #[serial]
 async fn test_mdns_discovered_peers_stored_in_database() {
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let temp_dir1 = TempDir::new().expect("Failed to create temp dir 1");
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
@@ -180,7 +186,9 @@ async fn test_mdns_discovered_peers_stored_in_database() {
 
     sleep(Duration::from_secs(1)).await;
 
-    let _guard2 = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard2 = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Setup and start node 2
     setup_test_env_auto(&temp_dir2);
@@ -200,7 +208,9 @@ async fn test_mdns_discovered_peers_stored_in_database() {
     manager1.stop().await.unwrap();
     drop(manager1);
 
-    let _guard3 = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard3 = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Reset environment variables to temp_dir1's paths before restarting
     setup_test_env_auto(&temp_dir1);

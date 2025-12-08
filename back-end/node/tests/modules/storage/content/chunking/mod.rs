@@ -1,10 +1,15 @@
-//! Integration tests for chunking algorithms.
+pub mod config;
+pub mod types;
+
+/// Integration tests for chunking algorithms.
 
 #[cfg(test)]
 mod integration_tests {
     use node::modules::storage::content::{
         ChunkData, ChunkRef, Chunker, ChunkingAlgorithm, ChunkingConfig,
     };
+
+    use crate::bootstrap::init::{remove_env, set_env};
 
     /// Test that all algorithms produce valid reconstructable output.
     #[test]
@@ -243,5 +248,439 @@ mod integration_tests {
 
         // CDC algorithms should generally have more common chunks
         // (not guaranteed for all inputs, but typical)
+    }
+
+    #[test]
+    fn test_concurrent_chunking_different_data() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let chunker = Arc::new(ChunkingAlgorithm::FastCdc.create_chunker(ChunkingConfig::small()));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let chunker = Arc::clone(&chunker);
+                thread::spawn(move || {
+                    let data: Vec<u8> = (0..1000).map(|j| ((i * 100 + j) % 256) as u8).collect();
+                    let chunks = chunker.chunk(&data);
+                    let reconstructed: Vec<u8> =
+                        chunks.iter().flat_map(|c| c.data.clone()).collect();
+                    assert_eq!(reconstructed, data);
+                    chunks.len()
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let count = handle.join().expect("Thread panicked");
+            assert!(count > 0);
+        }
+    }
+
+    #[test]
+    fn test_concurrent_chunking_same_data() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let chunker = Arc::new(ChunkingAlgorithm::FastCdc.create_chunker(ChunkingConfig::small()));
+        let data: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+        let data = Arc::new(data);
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let chunker = Arc::clone(&chunker);
+                let data = Arc::clone(&data);
+                thread::spawn(move || {
+                    let chunks = chunker.chunk(&data);
+                    chunks
+                        .iter()
+                        .map(|c| c.to_chunk_ref().cid.to_string())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("Thread panicked"))
+            .collect();
+
+        // All threads should produce identical CIDs
+        let first = &results[0];
+        for result in &results[1..] {
+            assert_eq!(first, result);
+        }
+    }
+
+    // ============================================
+    // Binary Data Integrity Tests
+    // ============================================
+
+    #[test]
+    fn test_all_byte_values() {
+        let data: Vec<u8> = (0..=255).cycle().take(10000).collect();
+
+        for alg in [
+            ChunkingAlgorithm::Fixed,
+            ChunkingAlgorithm::FastCdc,
+            ChunkingAlgorithm::Rabin,
+        ] {
+            let chunker = alg.create_chunker(ChunkingConfig::small());
+            let chunks = chunker.chunk(&data);
+            let reconstructed: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+
+            assert_eq!(
+                reconstructed, data,
+                "Algorithm {:?} failed binary test",
+                alg
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_binary_data() {
+        // Pseudo-random data
+        let data: Vec<u8> = (0u64..50000)
+            .map(|i| (i.wrapping_mul(1103515245).wrapping_add(12345) % 256) as u8)
+            .collect();
+
+        for alg in [
+            ChunkingAlgorithm::Fixed,
+            ChunkingAlgorithm::FastCdc,
+            ChunkingAlgorithm::Rabin,
+        ] {
+            let chunker = alg.create_chunker(ChunkingConfig::small());
+            let chunks = chunker.chunk(&data);
+            let reconstructed: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+
+            assert_eq!(
+                reconstructed, data,
+                "Algorithm {:?} failed random binary test",
+                alg
+            );
+        }
+    }
+
+    // ============================================
+    // chunk() vs chunk_iter() Equivalence Tests
+    // ============================================
+
+    #[test]
+    fn test_chunk_vs_iter_equivalence_all_algorithms() {
+        let data: Vec<u8> = (0..20000).map(|i| (i % 256) as u8).collect();
+
+        for alg in [
+            ChunkingAlgorithm::Fixed,
+            ChunkingAlgorithm::FastCdc,
+            ChunkingAlgorithm::Rabin,
+        ] {
+            let chunker = alg.create_chunker(ChunkingConfig::small());
+
+            let collected = chunker.chunk(&data);
+            let iterated: Vec<_> = chunker.chunk_iter(&data).collect();
+
+            assert_eq!(
+                collected.len(),
+                iterated.len(),
+                "Algorithm {:?}: chunk count differs",
+                alg
+            );
+
+            for (i, (c, iter)) in collected.iter().zip(iterated.iter()).enumerate() {
+                assert_eq!(
+                    c.data, iter.data,
+                    "Algorithm {:?}: chunk {} data differs",
+                    alg, i
+                );
+                assert_eq!(
+                    c.offset, iter.offset,
+                    "Algorithm {:?}: chunk {} offset differs",
+                    alg, i
+                );
+            }
+        }
+    }
+
+    // ============================================
+    // Size Bound Tests
+    // ============================================
+
+    #[test]
+    fn test_cdc_algorithms_respect_max_size() {
+        let config = ChunkingConfig::new(2048, 8192, 32768);
+        let data: Vec<u8> = (0..50000).map(|i| ((i * 17) % 256) as u8).collect();
+
+        for alg in [ChunkingAlgorithm::FastCdc, ChunkingAlgorithm::Rabin] {
+            let chunker = alg.create_chunker(config.clone());
+            let chunks = chunker.chunk(&data);
+
+            for (i, chunk) in chunks.iter().enumerate() {
+                assert!(
+                    chunk.size() <= config.max_size,
+                    "Algorithm {:?}: chunk {} size {} exceeds max {}",
+                    alg,
+                    i,
+                    chunk.size(),
+                    config.max_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cdc_algorithms_respect_min_size() {
+        let config = ChunkingConfig::new(2048, 8192, 32768);
+        let data: Vec<u8> = (0..100000).map(|i| ((i * 17) % 256) as u8).collect();
+
+        for alg in [ChunkingAlgorithm::FastCdc, ChunkingAlgorithm::Rabin] {
+            let chunker = alg.create_chunker(config.clone());
+            let chunks = chunker.chunk(&data);
+
+            for (i, chunk) in chunks.iter().enumerate() {
+                let is_last = i == chunks.len() - 1;
+                if !is_last {
+                    assert!(
+                        chunk.size() >= config.min_size,
+                        "Algorithm {:?}: non-final chunk {} size {} below min {}",
+                        alg,
+                        i,
+                        chunk.size(),
+                        config.min_size
+                    );
+                }
+            }
+        }
+    }
+
+    // ============================================
+    // Deduplication Extended Tests
+    // ============================================
+
+    #[test]
+    fn test_dedup_after_append() {
+        let config = ChunkingConfig::new(2048, 8192, 32768);
+        let original: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        let mut appended = original.clone();
+        appended.extend(vec![0u8; 1000]); // Append 10%
+
+        for alg in [ChunkingAlgorithm::FastCdc, ChunkingAlgorithm::Rabin] {
+            let chunker = alg.create_chunker(config.clone());
+
+            let orig_chunks = chunker.chunk(&original);
+            let appended_chunks = chunker.chunk(&appended);
+
+            // Only test if we have multiple chunks
+            if orig_chunks.len() < 2 {
+                println!(
+                    "Skipping {:?}: not enough chunks ({})",
+                    alg,
+                    orig_chunks.len()
+                );
+                continue;
+            }
+
+            let orig_cids: std::collections::HashSet<_> = orig_chunks
+                .iter()
+                .map(|c| c.to_chunk_ref().cid.to_string())
+                .collect();
+
+            let appended_cids: std::collections::HashSet<_> = appended_chunks
+                .iter()
+                .map(|c| c.to_chunk_ref().cid.to_string())
+                .collect();
+
+            let common = orig_cids.intersection(&appended_cids).count();
+
+            println!(
+                "Algorithm {:?}: {} original chunks, {} appended chunks, {} common",
+                alg,
+                orig_cids.len(),
+                appended_cids.len(),
+                common
+            );
+
+            // CDC should share at least some chunks when appending
+            // (relaxed assertion - just verify we get some benefit)
+            assert!(
+                common > 0 || orig_cids.len() <= 2,
+                "Algorithm {:?}: expected some shared chunks after append",
+                alg
+            );
+        }
+    }
+
+    #[test]
+    fn test_dedup_after_prepend() {
+        let config = ChunkingConfig::small();
+        let original: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        let mut prepended = vec![0u8; 1000]; // Prepend 10%
+        prepended.extend(&original);
+
+        let fixed = ChunkingAlgorithm::Fixed.create_chunker(config.clone());
+        let fastcdc = ChunkingAlgorithm::FastCdc.create_chunker(config.clone());
+
+        let fixed_orig: std::collections::HashSet<_> = fixed
+            .chunk(&original)
+            .iter()
+            .map(|c| c.to_chunk_ref().cid.to_string())
+            .collect();
+        let fixed_prep: std::collections::HashSet<_> = fixed
+            .chunk(&prepended)
+            .iter()
+            .map(|c| c.to_chunk_ref().cid.to_string())
+            .collect();
+        let fixed_common = fixed_orig.intersection(&fixed_prep).count();
+
+        let cdc_orig: std::collections::HashSet<_> = fastcdc
+            .chunk(&original)
+            .iter()
+            .map(|c| c.to_chunk_ref().cid.to_string())
+            .collect();
+        let cdc_prep: std::collections::HashSet<_> = fastcdc
+            .chunk(&prepended)
+            .iter()
+            .map(|c| c.to_chunk_ref().cid.to_string())
+            .collect();
+        let cdc_common = cdc_orig.intersection(&cdc_prep).count();
+
+        println!(
+            "Fixed: {} common, FastCDC: {} common",
+            fixed_common, cdc_common
+        );
+
+        // CDC should generally have more common chunks than fixed for prepend
+        // (fixed shifts all boundaries, CDC is content-defined)
+    }
+
+    // ============================================
+    // Regression Tests
+    // ============================================
+
+    #[test]
+    fn test_rabin_hash_index_bounds_regression() {
+        let config = ChunkingConfig::small();
+        let chunker = ChunkingAlgorithm::Rabin.create_chunker(config);
+
+        let test_cases: Vec<Vec<u8>> = vec![
+            (0..10000).map(|i| (i % 256) as u8).collect(),
+            (0..10000).map(|i| ((i * 7 + 13) % 256) as u8).collect(),
+            (0..10000).map(|i| ((i * 17) % 256) as u8).collect(),
+            vec![0u8; 10000],
+            vec![255u8; 10000],
+            (0..10000).map(|_| rand::random::<u8>()).collect(),
+        ];
+
+        for (i, data) in test_cases.iter().enumerate() {
+            // Should not panic with "index out of bounds"
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| chunker.chunk(data)));
+            assert!(result.is_ok(), "Rabin chunker panicked on test case {}", i);
+        }
+    }
+
+    // ============================================
+    // Algorithm-Specific Edge Cases
+    // ============================================
+
+    #[test]
+    fn test_uniform_data_chunking() {
+        let config = ChunkingConfig::small();
+        let data = vec![0u8; 50000]; // All zeros
+
+        for alg in [
+            ChunkingAlgorithm::Fixed,
+            ChunkingAlgorithm::FastCdc,
+            ChunkingAlgorithm::Rabin,
+        ] {
+            let chunker = alg.create_chunker(config.clone());
+            let chunks = chunker.chunk(&data);
+
+            // Should still produce chunks
+            assert!(
+                !chunks.is_empty(),
+                "Algorithm {:?} produced no chunks for uniform data",
+                alg
+            );
+
+            // Reconstruction should work
+            let reconstructed: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+            assert_eq!(reconstructed, data);
+        }
+    }
+
+    #[test]
+    fn test_highly_compressible_data() {
+        let config = ChunkingConfig::small();
+        // Repeating pattern
+        let pattern = b"ABCDEFGH";
+        let data: Vec<u8> = pattern.iter().cycle().take(50000).cloned().collect();
+
+        for alg in [
+            ChunkingAlgorithm::Fixed,
+            ChunkingAlgorithm::FastCdc,
+            ChunkingAlgorithm::Rabin,
+        ] {
+            let chunker = alg.create_chunker(config.clone());
+            let chunks = chunker.chunk(&data);
+
+            // Reconstruction should work
+            let reconstructed: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+            assert_eq!(
+                reconstructed, data,
+                "Algorithm {:?} failed on compressible data",
+                alg
+            );
+        }
+    }
+
+    // ============================================
+    // ChunkingAlgorithm Environment Tests
+    // ============================================
+
+    #[test]
+    #[serial_test::serial]
+    fn test_algorithm_from_env_default() {
+        remove_env("CHUNKING_ALGORITHM");
+        let alg = ChunkingAlgorithm::from_env();
+        assert_eq!(alg, ChunkingAlgorithm::FastCdc);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_algorithm_from_env_valid() {
+        set_env("CHUNKING_ALGORITHM", "rabin");
+        let alg = ChunkingAlgorithm::from_env();
+        remove_env("CHUNKING_ALGORITHM");
+        assert_eq!(alg, ChunkingAlgorithm::Rabin);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_algorithm_from_env_invalid() {
+        set_env("CHUNKING_ALGORITHM", "invalid_algorithm");
+        let alg = ChunkingAlgorithm::from_env();
+        remove_env("CHUNKING_ALGORITHM");
+        assert_eq!(alg, ChunkingAlgorithm::FastCdc); // Default
+    }
+
+    // ============================================
+    // Display Trait Test
+    // ============================================
+
+    #[test]
+    fn test_algorithm_display() {
+        assert_eq!(format!("{}", ChunkingAlgorithm::Fixed), "fixed");
+        assert_eq!(format!("{}", ChunkingAlgorithm::FastCdc), "fastcdc");
+        assert_eq!(format!("{}", ChunkingAlgorithm::Rabin), "rabin");
+    }
+
+    // ============================================
+    // Default Trait Test
+    // ============================================
+
+    #[test]
+    fn test_algorithm_default() {
+        let alg = ChunkingAlgorithm::default();
+        assert_eq!(alg, ChunkingAlgorithm::FastCdc);
     }
 }

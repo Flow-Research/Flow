@@ -97,7 +97,9 @@ impl PerfTestNode {
 async fn test_connection_establishment_latency() {
     // Measures the time from node start to first peer connection
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Start first node
     let node1 = PerfTestNode::new("perf_conn_1").await;
@@ -159,7 +161,9 @@ async fn test_connection_establishment_latency() {
 async fn test_message_delivery_latency() {
     // Measures end-to-end message delivery time
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
@@ -259,7 +263,9 @@ async fn test_message_delivery_latency() {
 async fn test_message_throughput() {
     // Measures messages per second throughput
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
@@ -368,7 +374,9 @@ async fn test_message_throughput() {
 async fn test_reconnection_time() {
     // Measures time to reconnect after disconnect
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_reconn_1").await;
