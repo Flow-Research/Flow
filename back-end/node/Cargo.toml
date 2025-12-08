@@ -65,6 +65,9 @@ futures = "0.3.31"
 rocksdb = { version = "0.24.0", features = ["multi-threaded-cf", "lz4", "snappy"] }
 web-time = "1.1.0"
 hex = "0.4.3"
+cid = "0.11.1"
+multihash = "0.19.3"
+serde_ipld_dagcbor = "0.6.4"
 
 [dev-dependencies]
 reqwest = "0.12.24"
