@@ -1,7 +1,8 @@
-use tracing::debug;
-
 use super::config::ChunkingConfig;
-use super::types::{ChunkData, Chunker};
+use super::streaming::FixedStreamingIter;
+use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use std::io::Read;
+use tracing::debug;
 
 /// Fixed-size chunker.
 ///
@@ -52,6 +53,13 @@ impl Chunker for FixedChunker {
 
     fn config(&self) -> &ChunkingConfig {
         &self.config
+    }
+
+    fn stream_chunks<'a, R: Read + Send + 'a>(
+        &'a self,
+        reader: R,
+    ) -> Box<dyn Iterator<Item = StreamingChunkResult<ChunkData>> + Send + 'a> {
+        Box::new(FixedStreamingIter::new(reader, &self.config))
     }
 }
 

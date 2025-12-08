@@ -1,6 +1,18 @@
-use serde::{Deserialize, Serialize};
-
 use crate::modules::storage::content::ContentId;
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+use thiserror::Error;
+
+/// Error type for streaming chunking operations.
+#[derive(Debug, Error)]
+pub enum StreamingChunkError {
+    /// IO error during read operations.
+    #[error("IO error during chunking: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Result type for streaming chunking.
+pub type StreamingChunkResult<T> = Result<T, StreamingChunkError>;
 
 /// Reference to a chunk within a larger document.
 ///
@@ -86,5 +98,49 @@ pub trait Chunker: Send + Sync {
     /// Get the target chunk size.
     fn target_size(&self) -> usize {
         self.config().target_size
+    }
+
+    /// Stream chunks from a Read source without loading entire input into memory.
+    ///
+    /// This is the most memory-efficient API for large files. Memory usage is
+    /// bounded by approximately `2 * max_size` regardless of input size.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation reads the entire input into memory and
+    /// delegates to `chunk()`. Chunkers should override this method for
+    /// true streaming behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StreamingChunkError::Io` if reading from the source fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::fs::File;
+    /// let file = File::open("large_file.bin")?;
+    /// for result in chunker.stream_chunks(file) {
+    ///     let chunk = result?;
+    ///     println!("Chunk at {}: {} bytes", chunk.offset, chunk.size());
+    /// }
+    /// ```
+    fn stream_chunks<'a, R: Read + Send + 'a>(
+        &'a self,
+        mut reader: R,
+    ) -> Box<dyn Iterator<Item = StreamingChunkResult<ChunkData>> + Send + 'a>
+    where
+        Self: Sized,
+    {
+        // Default implementation: read all into memory
+        // Chunkers should override this for true streaming
+        let mut data = Vec::new();
+        match reader.read_to_end(&mut data) {
+            Ok(_) => {
+                let chunks = self.chunk(&data);
+                Box::new(chunks.into_iter().map(Ok))
+            }
+            Err(e) => Box::new(std::iter::once(Err(StreamingChunkError::Io(e)))),
+        }
     }
 }

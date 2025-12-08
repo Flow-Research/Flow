@@ -1,10 +1,12 @@
-use tracing::debug;
+use crate::modules::storage::content::chunking::streaming::RabinStreamingIter;
 
 use super::config::ChunkingConfig;
-use super::types::{ChunkData, Chunker};
+use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use std::io::Read;
+use tracing::debug;
 
 /// Standard Rabin polynomial used by IPFS.
-const IPFS_POLYNOMIAL: u64 = 0x3DA3358B4DC173;
+pub const IPFS_POLYNOMIAL: u64 = 0x3DA3358B4DC173;
 
 /// Window size for rolling hash.
 const WINDOW_SIZE: usize = 64;
@@ -150,7 +152,7 @@ impl Chunker for RabinChunker {
             let chunk_len = i - chunk_start + 1;
 
             // Update rolling hash
-            if i < WINDOW_SIZE {
+            if chunk_len <= WINDOW_SIZE {
                 hash = self.update_hash(hash, byte);
             } else {
                 hash = self.slide_hash(hash, data[window_start], byte);
@@ -187,6 +189,13 @@ impl Chunker for RabinChunker {
 
     fn config(&self) -> &ChunkingConfig {
         &self.config
+    }
+
+    fn stream_chunks<'a, R: Read + Send + 'a>(
+        &'a self,
+        reader: R,
+    ) -> Box<dyn Iterator<Item = StreamingChunkResult<ChunkData>> + Send + 'a> {
+        Box::new(RabinStreamingIter::new(reader, self.config.clone()))
     }
 }
 

@@ -1,8 +1,9 @@
-use fastcdc::v2020::FastCDC;
-use tracing::debug;
-
 use super::config::ChunkingConfig;
-use super::types::{ChunkData, Chunker};
+use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use crate::modules::storage::content::chunking::streaming::FastCdcStreamingIter;
+use fastcdc::v2020::FastCDC;
+use std::io::Read;
+use tracing::debug;
 
 /// FastCDC content-defined chunker.
 ///
@@ -76,6 +77,13 @@ impl Chunker for FastCdcChunker {
 
     fn config(&self) -> &ChunkingConfig {
         &self.config
+    }
+
+    fn stream_chunks<'a, R: Read + Send + 'a>(
+        &'a self,
+        reader: R,
+    ) -> Box<dyn Iterator<Item = StreamingChunkResult<ChunkData>> + Send + 'a> {
+        Box::new(FastCdcStreamingIter::new(reader, self.config.clone()))
     }
 }
 

@@ -21,6 +21,7 @@ mod config;
 mod fastcdc;
 mod fixed;
 mod rabin;
+mod streaming;
 mod types;
 
 pub use config::ChunkingConfig;

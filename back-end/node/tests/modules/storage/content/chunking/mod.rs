@@ -1,4 +1,5 @@
 pub mod config;
+pub mod streaming;
 pub mod types;
 
 /// Integration tests for chunking algorithms.
