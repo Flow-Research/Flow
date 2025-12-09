@@ -1,5 +1,6 @@
 use super::config::ChunkingConfig;
 use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use crate::modules::storage::content::ChunkingAlgorithm;
 use crate::modules::storage::content::chunking::streaming::FastCdcStreamingIter;
 use fastcdc::v2020::FastCDC;
 use std::io::Read;
@@ -73,6 +74,10 @@ impl Chunker for FastCdcChunker {
 
     fn name(&self) -> &'static str {
         "fastcdc"
+    }
+
+    fn algorithm(&self) -> ChunkingAlgorithm {
+        ChunkingAlgorithm::FastCdc
     }
 
     fn config(&self) -> &ChunkingConfig {

@@ -1,6 +1,7 @@
 use super::config::ChunkingConfig;
 use super::rabin_core::{IPFS_POLYNOMIAL, RabinCore, WINDOW_SIZE};
 use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use crate::modules::storage::content::ChunkingAlgorithm;
 use crate::modules::storage::content::chunking::streaming::RabinStreamingIter;
 use std::io::Read;
 use tracing::debug;
@@ -99,6 +100,10 @@ impl Chunker for RabinChunker {
 
     fn name(&self) -> &'static str {
         "rabin"
+    }
+
+    fn algorithm(&self) -> ChunkingAlgorithm {
+        ChunkingAlgorithm::Rabin
     }
 
     fn config(&self) -> &ChunkingConfig {

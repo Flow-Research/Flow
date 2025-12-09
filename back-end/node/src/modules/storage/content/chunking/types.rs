@@ -92,6 +92,9 @@ pub trait Chunker: Send + Sync {
     /// Get the algorithm name.
     fn name(&self) -> &'static str;
 
+    /// Get the chunking algorithm type.
+    fn algorithm(&self) -> super::ChunkingAlgorithm;
+
     /// Get the configuration.
     fn config(&self) -> &super::ChunkingConfig;
 

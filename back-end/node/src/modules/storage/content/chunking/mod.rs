@@ -31,7 +31,7 @@ pub use fixed::FixedChunker;
 pub use rabin::RabinChunker;
 pub use rabin_core::{IPFS_POLYNOMIAL, RabinCore, WINDOW_SIZE};
 use serde::{Deserialize, Serialize};
-pub use types::{ChunkData, ChunkRef, Chunker};
+pub use types::{ChunkData, ChunkRef, Chunker, StreamingChunkError};
 
 use tracing::info;
 

@@ -1,5 +1,6 @@
 pub mod behaviour;
 pub mod config;
+pub mod content_transfer;
 pub mod gossipsub;
 pub mod keypair;
 pub mod manager;

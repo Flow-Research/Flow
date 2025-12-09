@@ -1,6 +1,7 @@
 use super::config::ChunkingConfig;
 use super::streaming::FixedStreamingIter;
 use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use crate::modules::storage::content::ChunkingAlgorithm;
 use std::io::Read;
 use tracing::debug;
 
@@ -49,6 +50,10 @@ impl Chunker for FixedChunker {
 
     fn name(&self) -> &'static str {
         "fixed"
+    }
+
+    fn algorithm(&self) -> ChunkingAlgorithm {
+        ChunkingAlgorithm::Fixed
     }
 
     fn config(&self) -> &ChunkingConfig {

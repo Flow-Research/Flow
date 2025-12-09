@@ -2,6 +2,7 @@ mod block;
 mod block_store;
 pub mod chunking;
 mod cid;
+mod dag;
 mod error;
 mod manifest;
 
@@ -9,9 +10,12 @@ pub use block::Block;
 pub use block_store::{BlockStore, BlockStoreConfig, BlockStoreStats};
 pub use chunking::{
     ChunkData, ChunkRef, Chunker, ChunkingAlgorithm, ChunkingConfig, FastCdcChunker, FixedChunker,
-    RabinChunker,
+    RabinChunker, StreamingChunkError,
 };
 pub use cid::ContentId;
+pub use dag::{
+    DagBuildResult, DagBuilder, DagChunkIterator, DagError, DagMetadata, DagReader, DagResult,
+};
 pub use error::BlockStoreError;
 
 pub use manifest::{
