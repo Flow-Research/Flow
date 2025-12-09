@@ -29,9 +29,10 @@
 //! }
 //! ```
 
+mod codec;
 mod messages;
 
 pub use messages::{
     CONTENT_PROTOCOL_ID, CONTENT_PROTOCOL_VERSION, ContentRequest, ContentResponse, ErrorCode,
-    MAX_MESSAGE_SIZE,
+    MAX_LINKS, MAX_MESSAGE_SIZE,
 };
