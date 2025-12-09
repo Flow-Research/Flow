@@ -64,7 +64,12 @@ impl Block {
         data: Vec<u8>,
         links: Vec<ContentId>,
     ) -> Result<Self, BlockStoreError> {
-        let computed_cid = ContentId::from_bytes(&data);
+        // Compute CID using the same codec as expected
+        let computed_cid = if expected_cid.is_dag_cbor() {
+            ContentId::from_dag_cbor(&data)
+        } else {
+            ContentId::from_bytes(&data)
+        };
 
         if computed_cid != expected_cid {
             return Err(BlockStoreError::IntegrityError {
@@ -129,6 +134,24 @@ impl Block {
             .collect();
 
         Self::from_parts(cid, data, links?)
+    }
+
+    /// Create a new block from DAG-CBOR data with links.
+    ///
+    /// The CID is computed using the DAG-CBOR codec (0x71) instead of RAW.
+    /// Use this for structured IPLD data like manifests and tree nodes.
+    pub fn from_dag_cbor(data: impl Into<Vec<u8>>, links: Vec<ContentId>) -> Self {
+        let data = data.into();
+        let cid = ContentId::from_dag_cbor(&data);
+
+        debug!(
+            cid = %cid,
+            size = data.len(),
+            link_count = links.len(),
+            "Created DAG-CBOR block"
+        );
+
+        Self { cid, data, links }
     }
 }
 

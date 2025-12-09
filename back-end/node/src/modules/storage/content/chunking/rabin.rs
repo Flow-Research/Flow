@@ -1,15 +1,9 @@
-use crate::modules::storage::content::chunking::streaming::RabinStreamingIter;
-
 use super::config::ChunkingConfig;
+use super::rabin_core::{IPFS_POLYNOMIAL, RabinCore, WINDOW_SIZE};
 use super::types::{ChunkData, Chunker, StreamingChunkResult};
+use crate::modules::storage::content::chunking::streaming::RabinStreamingIter;
 use std::io::Read;
 use tracing::debug;
-
-/// Standard Rabin polynomial used by IPFS.
-pub const IPFS_POLYNOMIAL: u64 = 0x3DA3358B4DC173;
-
-/// Window size for rolling hash.
-const WINDOW_SIZE: usize = 64;
 
 /// Rabin fingerprint chunker.
 ///
@@ -21,13 +15,7 @@ const WINDOW_SIZE: usize = 64;
 #[derive(Debug, Clone)]
 pub struct RabinChunker {
     config: ChunkingConfig,
-    polynomial: u64,
-    /// Bitmask for boundary detection (based on target size).
-    mask: u64,
-    /// Precomputed table for fast modular reduction.
-    mod_table: [u64; 256],
-    /// Precomputed table for window sliding.
-    out_table: [u64; 256],
+    core: RabinCore,
 }
 
 impl RabinChunker {
@@ -46,93 +34,19 @@ impl RabinChunker {
             "Creating Rabin chunker"
         );
 
-        // Calculate mask based on target size
-        // Average chunk size ≈ 2^(number of 1s in mask + 1)
-        let bits = (config.target_size as f64).log2().floor() as u32;
-        let mask = (1u64 << bits) - 1;
+        let core = RabinCore::with_polynomial(&config, polynomial);
 
-        // Precompute modular reduction table
-        let mod_table = Self::compute_mod_table(polynomial);
-        let out_table = Self::compute_out_table(polynomial);
-
-        Self {
-            config,
-            polynomial,
-            mask,
-            mod_table,
-            out_table,
-        }
+        Self { config, core }
     }
 
-    /// Compute the modular reduction lookup table.
-    fn compute_mod_table(polynomial: u64) -> [u64; 256] {
-        let mut table = [0u64; 256];
-        for i in 0..256 {
-            let mut hash = (i as u64) << 55;
-            for _ in 0..8 {
-                if hash & (1 << 63) != 0 {
-                    hash = (hash << 1) ^ polynomial;
-                } else {
-                    hash <<= 1;
-                }
-            }
-            table[i] = hash;
-        }
-        table
-    }
-
-    /// Compute the output table for sliding window.
-    fn compute_out_table(polynomial: u64) -> [u64; 256] {
-        let mut table = [0u64; 256];
-        for i in 0..256 {
-            let mut hash = 0u64;
-            hash = Self::update_hash_raw(hash, i as u8, polynomial);
-            for _ in 1..WINDOW_SIZE {
-                hash = Self::update_hash_raw(hash, 0, polynomial);
-            }
-            table[i] = hash;
-        }
-        table
-    }
-
-    /// Update hash with a single byte (raw, without table optimization).
-    fn update_hash_raw(hash: u64, byte: u8, polynomial: u64) -> u64 {
-        let mut h = hash;
-        for i in (0..8).rev() {
-            if h & (1 << 63) != 0 {
-                h = (h << 1) ^ polynomial;
-            } else {
-                h <<= 1;
-            }
-            if byte & (1 << i) != 0 {
-                h ^= polynomial;
-            }
-        }
-        h
-    }
-
-    /// Update the rolling hash with a new byte.
-    #[inline]
-    fn update_hash(&self, hash: u64, byte: u8) -> u64 {
-        let top = (hash >> 56) as usize;
-        (hash << 8) ^ self.mod_table[top] ^ (byte as u64)
-    }
-
-    /// Slide the window: remove old byte, add new byte.
-    #[inline]
-    fn slide_hash(&self, hash: u64, out_byte: u8, in_byte: u8) -> u64 {
-        let h = hash ^ self.out_table[out_byte as usize];
-        self.update_hash(h, in_byte)
-    }
-
-    /// Check if hash indicates a chunk boundary.
-    #[inline]
-    fn is_boundary(&self, hash: u64) -> bool {
-        (hash & self.mask) == 0
-    }
-
+    /// Get the polynomial used by this chunker.
     pub fn polynomial(&self) -> u64 {
-        self.polynomial
+        self.core.polynomial()
+    }
+
+    /// Get a reference to the rabin core
+    pub fn core(&self) -> &RabinCore {
+        &self.core
     }
 }
 
@@ -151,16 +65,16 @@ impl Chunker for RabinChunker {
             let byte = data[i];
             let chunk_len = i - chunk_start + 1;
 
-            // Update rolling hash
+            // Update rolling hash using core
             if chunk_len <= WINDOW_SIZE {
-                hash = self.update_hash(hash, byte);
+                hash = self.core.update_hash(hash, byte);
             } else {
-                hash = self.slide_hash(hash, data[window_start], byte);
+                hash = self.core.slide_hash(hash, data[window_start], byte);
                 window_start += 1;
             }
 
             // Check for chunk boundary
-            let at_boundary = self.is_boundary(hash) && chunk_len >= self.config.min_size;
+            let at_boundary = self.core.is_boundary(hash) && chunk_len >= self.config.min_size;
             let at_max = chunk_len >= self.config.max_size;
             let is_end = i == data.len() - 1;
 
@@ -195,7 +109,11 @@ impl Chunker for RabinChunker {
         &'a self,
         reader: R,
     ) -> Box<dyn Iterator<Item = StreamingChunkResult<ChunkData>> + Send + 'a> {
-        Box::new(RabinStreamingIter::new(reader, self.config.clone()))
+        Box::new(RabinStreamingIter::with_core(
+            reader,
+            self.config.clone(),
+            self.core.clone(),
+        ))
     }
 }
 

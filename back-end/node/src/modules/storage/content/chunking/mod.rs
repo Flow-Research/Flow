@@ -21,6 +21,7 @@ mod config;
 mod fastcdc;
 mod fixed;
 mod rabin;
+mod rabin_core;
 mod streaming;
 mod types;
 
@@ -28,12 +29,15 @@ pub use config::ChunkingConfig;
 pub use fastcdc::FastCdcChunker;
 pub use fixed::FixedChunker;
 pub use rabin::RabinChunker;
+pub use rabin_core::{IPFS_POLYNOMIAL, RabinCore, WINDOW_SIZE};
+use serde::{Deserialize, Serialize};
 pub use types::{ChunkData, ChunkRef, Chunker};
 
 use tracing::info;
 
 /// Available chunking algorithms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ChunkingAlgorithm {
     /// Fixed-size chunks. Simple but poor deduplication when content shifts.
     Fixed,

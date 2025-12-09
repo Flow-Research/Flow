@@ -3,6 +3,7 @@ mod block_store;
 pub mod chunking;
 mod cid;
 mod error;
+mod manifest;
 
 pub use block::Block;
 pub use block_store::{BlockStore, BlockStoreConfig, BlockStoreStats};
@@ -12,3 +13,8 @@ pub use chunking::{
 };
 pub use cid::ContentId;
 pub use error::BlockStoreError;
+
+pub use manifest::{
+    DEFAULT_TREE_FANOUT, DocumentManifest, DocumentManifestBuilder, FLAT_CHUNK_THRESHOLD,
+    MANIFEST_VERSION, ManifestStructure, TreeBuilder, TreeConfig, TreeNode, TreeReader,
+};

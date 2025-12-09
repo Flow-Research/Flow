@@ -1,10 +1,8 @@
+use super::config::ChunkingConfig;
+use super::rabin_core::{RabinCore, WINDOW_SIZE};
+use super::types::{ChunkData, StreamingChunkError, StreamingChunkResult};
 use std::io::{BufReader, Read};
 use tracing::{debug, trace, warn};
-
-use crate::modules::storage::content::chunking::rabin::IPFS_POLYNOMIAL;
-
-use super::config::ChunkingConfig;
-use super::types::{ChunkData, StreamingChunkError, StreamingChunkResult};
 
 /// Default buffer reader capacity.
 const DEFAULT_BUF_CAPACITY: usize = 64 * 1024; // 64KB
@@ -261,120 +259,27 @@ impl<R: Read> Iterator for FastCdcStreamingIter<R> {
 pub struct RabinStreamingIter<R: Read> {
     buffer: StreamBuffer<R>,
     config: ChunkingConfig,
-    mod_table: [u64; 256],
-    out_table: [u64; 256],
-    mask: u64,
+    core: RabinCore,
 }
 
 impl<R: Read> RabinStreamingIter<R> {
-    const WINDOW_SIZE: usize = 64;
-
-    /// Create a new Rabin streaming iterator.
+    /// Create a new Rabin streaming iterator with default polynomial.
+    #[allow(dead_code)]
     pub fn new(reader: R, config: ChunkingConfig) -> Self {
-        let capacity = config.max_size + Self::WINDOW_SIZE + 1024;
-        let bits = (config.target_size as f64).log2().floor() as u32;
-        let mask = (1u64 << bits) - 1;
+        let core = RabinCore::new(&config);
+        Self::with_core(reader, config, core)
+    }
 
+    /// Create a new Rabin streaming iterator with a rabin core.
+    ///
+    /// This ensures identical hashing behavior with `RabinChunker`s.
+    pub fn with_core(reader: R, config: ChunkingConfig, core: RabinCore) -> Self {
+        let capacity = config.max_size + WINDOW_SIZE + 1024;
         Self {
             buffer: StreamBuffer::new(reader, capacity),
-            mod_table: Self::compute_mod_table(IPFS_POLYNOMIAL),
-            out_table: Self::compute_out_table(IPFS_POLYNOMIAL),
-            mask,
             config,
+            core,
         }
-    }
-
-    fn compute_mod_table(polynomial: u64) -> [u64; 256] {
-        let mut table = [0u64; 256];
-        for i in 0..256 {
-            let mut hash = (i as u64) << 55;
-            for _ in 0..8 {
-                if hash & (1 << 63) != 0 {
-                    hash = (hash << 1) ^ polynomial;
-                } else {
-                    hash <<= 1;
-                }
-            }
-            table[i] = hash;
-        }
-        table
-    }
-
-    fn compute_out_table(polynomial: u64) -> [u64; 256] {
-        let mut table = [0u64; 256];
-        for i in 0..256 {
-            let mut hash = 0u64;
-            hash = Self::update_hash_raw(hash, i as u8, polynomial);
-            for _ in 1..Self::WINDOW_SIZE {
-                hash = Self::update_hash_raw(hash, 0, polynomial);
-            }
-            table[i] = hash;
-        }
-        table
-    }
-
-    fn update_hash_raw(hash: u64, byte: u8, polynomial: u64) -> u64 {
-        let mut h = hash;
-        for i in (0..8).rev() {
-            if h & (1 << 63) != 0 {
-                h = (h << 1) ^ polynomial;
-            } else {
-                h <<= 1;
-            }
-            if byte & (1 << i) != 0 {
-                h ^= polynomial;
-            }
-        }
-        h
-    }
-
-    #[inline]
-    fn update_hash(&self, hash: u64, byte: u8) -> u64 {
-        let top = (hash >> 56) as usize;
-        (hash << 8) ^ self.mod_table[top] ^ (byte as u64)
-    }
-
-    #[inline]
-    fn slide_hash(&self, hash: u64, out_byte: u8, in_byte: u8) -> u64 {
-        let h = hash ^ self.out_table[out_byte as usize];
-        self.update_hash(h, in_byte)
-    }
-
-    #[inline]
-    fn is_boundary(&self, hash: u64) -> bool {
-        (hash & self.mask) == 0
-    }
-
-    fn find_boundary(&self, data: &[u8]) -> usize {
-        if data.is_empty() {
-            return 0;
-        }
-
-        let mut hash = 0u64;
-
-        for (i, &byte) in data.iter().enumerate() {
-            let chunk_len = i + 1;
-
-            // Update rolling hash
-            if i < Self::WINDOW_SIZE {
-                hash = self.update_hash(hash, byte);
-            } else {
-                hash = self.slide_hash(hash, data[i - Self::WINDOW_SIZE], byte);
-            }
-
-            // Check for boundary
-            if self.is_boundary(hash) && chunk_len >= self.config.min_size {
-                return chunk_len;
-            }
-
-            // Hit max size
-            if chunk_len >= self.config.max_size {
-                return chunk_len;
-            }
-        }
-
-        // No boundary found - if this is all remaining data, return it
-        data.len()
     }
 }
 
@@ -395,13 +300,15 @@ impl<R: Read> Iterator for RabinStreamingIter<R> {
         let offset = self.buffer.offset();
         let data = self.buffer.data();
 
-        let chunk_size = self.find_boundary(data);
+        // Use the shared core's find_boundary method
+        let chunk_size = self
+            .core
+            .find_boundary(data, self.config.min_size, self.config.max_size);
 
         if chunk_size == 0 {
             return None;
         }
 
-        // At EOF, or boundary found, just emit the chunk.
         let chunk_data = self.buffer.consume(chunk_size);
         Some(Ok(ChunkData::new(chunk_data, offset)))
     }
