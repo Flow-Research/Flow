@@ -7432,6 +7432,7 @@ dependencies = [
  "num_cpus",
  "once_cell",
  "percent-encoding",
+ "proptest",
  "rand 0.8.5",
  "regex",
  "reqwest 0.12.24",

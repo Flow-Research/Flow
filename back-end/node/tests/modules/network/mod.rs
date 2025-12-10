@@ -1,6 +1,7 @@
 pub mod bootstrap;
 pub mod config;
 pub mod connection_limits;
+pub mod content_transfer;
 pub mod gossipsub;
 pub mod integration;
 pub mod manager;

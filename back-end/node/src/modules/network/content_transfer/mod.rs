@@ -30,9 +30,14 @@
 //! ```
 
 mod codec;
+mod config;
+mod error;
 mod messages;
 
+pub use codec::{ContentCodec, ContentProtocol};
+pub use config::ContentTransferConfig;
+pub use error::ContentTransferError;
 pub use messages::{
     CONTENT_PROTOCOL_ID, CONTENT_PROTOCOL_VERSION, ContentRequest, ContentResponse, ErrorCode,
-    MAX_LINKS, MAX_MESSAGE_SIZE,
+    MAX_LINKS, MAX_MESSAGE_SIZE, MessageError,
 };

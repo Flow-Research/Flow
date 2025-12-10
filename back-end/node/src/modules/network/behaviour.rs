@@ -1,15 +1,15 @@
-use std::time::Duration;
-
 use crate::modules::network::config::MdnsConfig;
+use crate::modules::network::content_transfer::{
+    ContentCodec, ContentProtocol, ContentRequest, ContentResponse, ContentTransferConfig,
+};
 use crate::modules::network::gossipsub::GossipSubConfig;
 use crate::modules::network::storage::RocksDbStore;
-use libp2p::PeerId;
-use libp2p::gossipsub;
 use libp2p::identity::Keypair;
-use libp2p::kad;
-use libp2p::mdns;
+use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
+use libp2p::{PeerId, gossipsub, kad, mdns};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Combined network behaviour for Flow
@@ -18,9 +18,7 @@ use tracing::{debug, info, warn};
 /// - Kademlia DHT for peer discovery and content routing
 /// - mDNS for local network discovery
 /// - GossipSub for pub/sub messaging
-///
-/// Future extensions will add:
-/// - Request-Response for direct queries
+/// - Request-Response for direct request response between nodes
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "FlowBehaviourEvent")]
 pub struct FlowBehaviour {
@@ -32,6 +30,9 @@ pub struct FlowBehaviour {
 
     /// GossipSub for pub/sub messaging
     pub gossipsub: Toggle<gossipsub::Behaviour>,
+
+    /// Request-Response for content transfer
+    pub content_transfer: Toggle<request_response::Behaviour<ContentCodec>>,
 }
 
 /// Events emitted by the Flow behaviour
@@ -42,6 +43,7 @@ pub enum FlowBehaviourEvent {
     Kademlia(kad::Event),
     Mdns(mdns::Event),
     Gossipsub(gossipsub::Event),
+    ContentTransfer(request_response::Event<ContentRequest, ContentResponse>),
 }
 
 impl From<kad::Event> for FlowBehaviourEvent {
@@ -62,6 +64,12 @@ impl From<gossipsub::Event> for FlowBehaviourEvent {
     }
 }
 
+impl From<request_response::Event<ContentRequest, ContentResponse>> for FlowBehaviourEvent {
+    fn from(event: request_response::Event<ContentRequest, ContentResponse>) -> Self {
+        FlowBehaviourEvent::ContentTransfer(event)
+    }
+}
+
 impl FlowBehaviour {
     /// Create a new FlowBehaviour with all protocols
     ///
@@ -77,11 +85,13 @@ impl FlowBehaviour {
         store: RocksDbStore,
         mdns_config: Option<&MdnsConfig>,
         gossipsub_config: Option<&GossipSubConfig>,
+        content_transfer_config: Option<&ContentTransferConfig>,
     ) -> Self {
         Self {
             kademlia: Self::create_kademlia(local_peer_id, store),
             mdns: Self::create_mdns(local_peer_id, mdns_config),
             gossipsub: Self::create_gossipsub(keypair, gossipsub_config),
+            content_transfer: Self::create_content_transfer(content_transfer_config),
         }
     }
 
@@ -163,6 +173,36 @@ impl FlowBehaviour {
                 Toggle::from(None)
             }
         }
+    }
+
+    /// Create content transfer request-response behaviour if enabled
+    fn create_content_transfer(
+        config: Option<&ContentTransferConfig>,
+    ) -> Toggle<request_response::Behaviour<ContentCodec>> {
+        let Some(config) = config else {
+            debug!("Content transfer disabled (no config)");
+            return Toggle::from(None);
+        };
+
+        if !config.enabled {
+            debug!("Content transfer disabled");
+            return Toggle::from(None);
+        }
+
+        let protocol = [(ContentProtocol::as_stream_protocol(), ProtocolSupport::Full)];
+
+        let req_resp_config =
+            request_response::Config::default().with_request_timeout(config.request_timeout());
+
+        let behaviour = request_response::Behaviour::new(protocol, req_resp_config);
+
+        info!(
+            timeout_secs = config.request_timeout_secs,
+            max_concurrent = config.max_concurrent_requests,
+            "Content transfer enabled"
+        );
+
+        Toggle::from(Some(behaviour))
     }
 
     /// Add a bootstrap peer to the Kademlia routing table
@@ -256,6 +296,40 @@ impl FlowBehaviour {
     pub fn is_gossipsub_enabled(&self) -> bool {
         self.gossipsub.is_enabled()
     }
+
+    /// Send a content request to a peer
+    pub fn send_content_request(
+        &mut self,
+        peer_id: &PeerId,
+        request: ContentRequest,
+    ) -> Option<request_response::OutboundRequestId> {
+        if let Some(ct) = self.content_transfer.as_mut() {
+            let request_id = ct.send_request(peer_id, request);
+            debug!(peer = %peer_id, request_id = ?request_id, "Sent content request");
+            Some(request_id)
+        } else {
+            warn!("Content transfer is disabled, cannot send request");
+            None
+        }
+    }
+
+    /// Send a content response
+    pub fn send_content_response(
+        &mut self,
+        channel: request_response::ResponseChannel<ContentResponse>,
+        response: ContentResponse,
+    ) -> Result<(), ContentResponse> {
+        if let Some(ct) = self.content_transfer.as_mut() {
+            ct.send_response(channel, response)
+        } else {
+            Err(response)
+        }
+    }
+
+    /// Check if content transfer is enabled
+    pub fn is_content_transfer_enabled(&self) -> bool {
+        self.content_transfer.is_enabled()
+    }
 }
 
 #[cfg(test)]
@@ -296,9 +370,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         // Verify Kademlia is initialized with empty routing table
         assert_eq!(
@@ -313,9 +395,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         // Attempt to bootstrap without any known peers
         let result = behaviour.bootstrap();
@@ -337,9 +427,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         // Add a bootstrap peer
         let bootstrap_peer = generate_peer_id();
@@ -365,9 +463,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         let bootstrap_peer = generate_peer_id();
         let addr: libp2p::Multiaddr = "/ip4/192.168.1.100/tcp/4001".parse().unwrap();
@@ -391,9 +497,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         // Add multiple bootstrap peers
         let peer1 = generate_peer_id();
@@ -413,9 +527,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         let bootstrap_peer = generate_peer_id();
 
@@ -438,9 +560,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         // Add a peer
         let peer = generate_peer_id();
@@ -461,9 +591,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let (store, _temp_dir) = create_test_store(peer_id);
+        let content_transfer_config = ContentTransferConfig::default();
         let gs_config = GossipSubConfig::default();
 
-        let behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         assert!(behaviour.is_gossipsub_enabled());
     }
@@ -474,7 +612,7 @@ mod tests {
         let peer_id = keypair.public().to_peer_id();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, None);
+        let behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, None, None);
 
         assert!(!behaviour.is_gossipsub_enabled());
     }
@@ -485,8 +623,16 @@ mod tests {
         let peer_id = keypair.public().to_peer_id();
         let (store, _temp_dir) = create_test_store(peer_id);
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
 
         let topic = gossipsub::IdentTopic::new("/flow/v1/test");
         let result = behaviour.subscribe(&topic);
@@ -502,9 +648,17 @@ mod tests {
         let keypair = generate_keypair();
         let peer_id = keypair.public().to_peer_id();
         let gs_config = GossipSubConfig::default();
+        let content_transfer_config = ContentTransferConfig::default();
         let (store, _temp_dir) = create_test_store(peer_id);
 
-        let mut behaviour = FlowBehaviour::new(peer_id, &keypair, store, None, Some(&gs_config));
+        let mut behaviour = FlowBehaviour::new(
+            peer_id,
+            &keypair,
+            store,
+            None,
+            Some(&gs_config),
+            Some(&content_transfer_config),
+        );
         let peer = generate_peer_id();
 
         // Test various valid multiaddr formats

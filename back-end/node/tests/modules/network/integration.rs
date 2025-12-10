@@ -12,7 +12,9 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::info;
 
-use crate::bootstrap::init::{NETWORK_MANAGER_LOCK, create_test_node_data, setup_test_env};
+use crate::bootstrap::init::{
+    NETWORK_MANAGER_LOCK, create_test_node_data, set_env, setup_test_env,
+};
 
 // ============================================================================
 // Test Helpers
@@ -70,6 +72,8 @@ impl TestNode {
         // Set env vars for NetworkManager::new() (reads GOSSIP_MESSAGE_DB_PATH)
         setup_test_env(&temp_dir, name);
 
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
+
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data)
             .await
@@ -91,6 +95,8 @@ impl TestNode {
         // IMPORTANT: Re-set env vars before start() because they may have been
         // overwritten by other TestNode::new() calls
         setup_test_env(&self.temp_dir, &self.name);
+
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
 
         self.manager.start(config).await.expect("Failed to start");
     }

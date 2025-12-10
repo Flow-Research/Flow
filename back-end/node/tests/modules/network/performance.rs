@@ -1,3 +1,4 @@
+use errors::AppError;
 use node::modules::network::config::{
     BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
 };
@@ -11,7 +12,9 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::bootstrap::init::{NETWORK_MANAGER_LOCK, create_test_node_data, setup_test_env};
+use crate::bootstrap::init::{
+    NETWORK_MANAGER_LOCK, create_test_node_data, set_env, setup_test_env,
+};
 
 // ============================================================================
 // Performance Metrics
@@ -68,13 +71,16 @@ fn create_performance_config(port: u16) -> NetworkConfig {
 
 struct PerfTestNode {
     manager: NetworkManager,
-    _temp_dir: TempDir,
+    temp_dir: TempDir,
+    name: String,
 }
 
 impl PerfTestNode {
     async fn new(name: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         setup_test_env(&temp_dir, name);
+
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
 
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data)
@@ -83,8 +89,22 @@ impl PerfTestNode {
 
         PerfTestNode {
             manager,
-            _temp_dir: temp_dir,
+            temp_dir: temp_dir,
+            name: name.to_string(),
         }
+    }
+
+    /// Re-set env vars and start the manager
+    async fn start(&self, config: &NetworkConfig) -> Result<(), AppError> {
+        // IMPORTANT: Re-set env vars before start() because they may have been
+        // overwritten by other PerfTestNode::new() calls
+        setup_test_env(&self.temp_dir, &self.name);
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
+        self.manager.start(config).await
+    }
+
+    async fn stop(&self) -> Result<(), AppError> {
+        self.manager.stop().await
     }
 }
 
@@ -104,7 +124,7 @@ async fn test_connection_establishment_latency() {
     // Start first node
     let node1 = PerfTestNode::new("perf_conn_1").await;
     let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(&config1).await.unwrap();
 
     sleep(Duration::from_secs(1)).await;
 
@@ -113,7 +133,7 @@ async fn test_connection_establishment_latency() {
     let config2 = create_performance_config(0);
 
     let start = Instant::now();
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(&config2).await.unwrap();
 
     // Poll for connection
     let mut connected = false;
@@ -168,12 +188,12 @@ async fn test_message_delivery_latency() {
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
     let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(&config1).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
     let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(&config2).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -270,12 +290,12 @@ async fn test_message_throughput() {
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
     let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(&config1).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
     let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(&config2).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -381,12 +401,12 @@ async fn test_reconnection_time() {
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_reconn_1").await;
     let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(&config1).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_reconn_2").await;
     let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(&config2).await.unwrap();
 
     // Wait for initial connection
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -421,7 +441,7 @@ async fn test_reconnection_time() {
 
     let node2_new = PerfTestNode::new("perf_reconn_2b").await; // Different name for fresh temp dir
     let config2_new = create_performance_config(0);
-    node2_new.manager.start(&config2_new).await.unwrap();
+    node2_new.start(&config2_new).await.unwrap();
 
     let reconnected = tokio::time::timeout(Duration::from_secs(30), async {
         loop {

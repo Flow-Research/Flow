@@ -73,6 +73,10 @@ pub fn setup_test_env(temp_dir: &TempDir, test_name: &str) {
             "GOSSIP_MESSAGE_DB_PATH",
             temp_dir.path().join(format!("{}_gossip", test_name)),
         );
+        std::env::set_var(
+            "BLOCK_STORE_PATH",
+            temp_dir.path().join(format!("{}_blocks", test_name)),
+        );
     }
 }
 

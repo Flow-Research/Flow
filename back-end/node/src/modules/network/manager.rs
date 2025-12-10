@@ -1,6 +1,9 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
 use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
+use crate::modules::network::content_transfer::{
+    ContentRequest, ContentResponse, ContentTransferConfig, ContentTransferError,
+};
 use crate::modules::network::gossipsub::{
     GossipSubConfig, Message, MessagePayload, MessageRouter, MessageStore, MessageStoreConfig,
     RouterStats, SubscriptionHandle, Topic, TopicSubscriptionManager,
@@ -13,17 +16,21 @@ use crate::modules::network::persistent_peer_registry::{
 };
 use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
+use crate::modules::storage::content::{
+    Block, BlockStore, BlockStoreConfig, ContentId, DocumentManifest,
+};
 use errors::AppError;
 use libp2p::gossipsub::{self, IdentTopic};
 use libp2p::kad::QueryResult;
 use libp2p::multiaddr::Protocol;
+use libp2p::request_response::{self, OutboundRequestId};
 use libp2p::{Multiaddr, PeerId, Swarm, futures::StreamExt, identity::Keypair, noise, tcp, yamux};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Result of bootstrap operation
 #[derive(Debug, Clone)]
@@ -131,6 +138,20 @@ enum NetworkCommand {
         topic: String,
         response: oneshot::Sender<Vec<PeerId>>,
     },
+
+    /// Request a block from a peer
+    RequestBlock {
+        peer_id: PeerId,
+        cid: ContentId,
+        response: oneshot::Sender<Result<Block, ContentTransferError>>,
+    },
+
+    /// Request a manifest from a peer  
+    RequestManifest {
+        peer_id: PeerId,
+        cid: ContentId,
+        response: oneshot::Sender<Result<DocumentManifest, ContentTransferError>>,
+    },
 }
 
 /// Connection capacity status
@@ -200,6 +221,27 @@ struct NetworkEventLoop {
 
     /// Connections rejected due to limits - don't decrement when they close
     rejected_connections: HashSet<PeerId>,
+
+    /// Block store for serving content
+    block_store: Option<Arc<BlockStore>>,
+
+    /// Pending outbound content requests
+    pending_content_requests: HashMap<OutboundRequestId, PendingContentRequest>,
+
+    /// Content transfer configuration
+    content_transfer_config: ContentTransferConfig,
+}
+
+/// Tracks a pending content request.
+struct PendingContentRequest {
+    /// Channel to send result back to caller.
+    response_tx: oneshot::Sender<Result<ContentResponse, ContentTransferError>>,
+    /// The CID being requested.
+    cid: ContentId,
+    /// The peer we're requesting from.
+    peer_id: PeerId,
+    /// When the request was created.
+    created_at: std::time::Instant,
 }
 
 impl NetworkManager {
@@ -297,6 +339,7 @@ impl NetworkManager {
             local_peer_id,
             storage_config.clone(),
         )?;
+        let content_transfer_config = ContentTransferConfig::from_env();
 
         // Create the behaviour
         let mut behaviour = FlowBehaviour::new(
@@ -309,6 +352,7 @@ impl NetworkManager {
                 None
             },
             Some(&config.gossipsub),
+            Some(&content_transfer_config),
         );
 
         // Add bootstrap peers to Kademlia
@@ -352,17 +396,27 @@ impl NetworkManager {
     /// # Errors
     /// Returns `AppError::Network` if already started or listen fails
     pub async fn start(&self, config: &NetworkConfig) -> Result<(), AppError> {
-        // 1. Guard check
+        // Guard check
         self.ensure_not_started().await?;
 
         info!("Starting NetworkManager event loop");
 
-        // 2. Build all components
+        // Build all components
+
+        let content_transfer_config = ContentTransferConfig::from_env();
+
+        let block_store = self.create_block_store(&content_transfer_config);
         let listen_addr = Self::resolve_listen_address(config)?;
         let swarm = self.build_configured_swarm(config).await?;
         let command_rx = self.take_command_receiver().await?;
-        let event_loop =
-            self.create_event_loop(swarm, command_rx, config, Arc::clone(&self.message_router))?;
+        let event_loop = self.create_event_loop(
+            swarm,
+            command_rx,
+            config,
+            Arc::clone(&self.message_router),
+            block_store,
+            content_transfer_config,
+        )?;
 
         // 3. Start listening and spawn
         let handle = self.spawn_event_loop(event_loop, listen_addr).await?;
@@ -382,6 +436,30 @@ impl NetworkManager {
             ));
         }
         Ok(())
+    }
+
+    fn create_block_store(
+        &self,
+        content_transfer_config: &ContentTransferConfig,
+    ) -> Option<Arc<BlockStore>> {
+        let block_store = if content_transfer_config.enabled {
+            let block_store_config = BlockStoreConfig::from_env();
+            match BlockStore::new(block_store_config) {
+                Ok(store) => {
+                    info!("Block store initialized for content transfer");
+                    Some(Arc::new(store))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize block store, content transfer disabled");
+                    None
+                }
+            }
+        } else {
+            debug!("Content transfer disabled, skipping block store initialization");
+            None
+        };
+
+        block_store
     }
 
     fn resolve_listen_address(config: &NetworkConfig) -> Result<Multiaddr, AppError> {
@@ -420,6 +498,8 @@ impl NetworkManager {
         command_rx: mpsc::UnboundedReceiver<NetworkCommand>,
         config: &NetworkConfig,
         message_router: Arc<MessageRouter>,
+        block_store: Option<Arc<BlockStore>>,
+        content_transfer_config: ContentTransferConfig,
     ) -> Result<NetworkEventLoop, AppError> {
         let peer_registry_config = PeerRegistryConfig::from_env();
         let mut persistent_registry =
@@ -457,6 +537,9 @@ impl NetworkManager {
             message_router,
             gossipsub_config: config.gossipsub.clone(),
             rejected_connections: HashSet::new(),
+            block_store,
+            pending_content_requests: HashMap::new(),
+            content_transfer_config,
         })
     }
 
@@ -845,6 +928,123 @@ impl NetworkManager {
     pub async fn is_running(&self) -> bool {
         let handle_guard = self.event_loop_handle.lock().await;
         handle_guard.is_some()
+    }
+
+    /// Request a block from a remote peer.
+    ///
+    /// # Arguments
+    /// * `peer_id` - The peer to request from
+    /// * `cid` - Content ID of the block
+    ///
+    /// # Returns
+    /// The block data if found, or an error.
+    #[instrument(skip(self), fields(peer = %peer_id, cid = %cid))]
+    pub async fn request_block(
+        &self,
+        peer_id: PeerId,
+        cid: ContentId,
+    ) -> Result<Block, ContentTransferError> {
+        self.ensure_started()
+            .await
+            .map_err(|_| ContentTransferError::NotStarted)?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::RequestBlock {
+                peer_id,
+                cid: cid.clone(),
+                response: response_tx,
+            })
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Failed to send command: {}", e),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Response channel closed: {}", e),
+            })?
+    }
+
+    /// Request a manifest from a remote peer.
+    ///
+    /// # Arguments
+    /// * `peer_id` - The peer to request from
+    /// * `cid` - Content ID of the manifest (root CID)
+    ///
+    /// # Returns
+    /// The parsed manifest if found, or an error.
+    #[instrument(skip(self), fields(peer = %peer_id, cid = %cid))]
+    pub async fn request_manifest(
+        &self,
+        peer_id: PeerId,
+        cid: ContentId,
+    ) -> Result<DocumentManifest, ContentTransferError> {
+        self.ensure_started()
+            .await
+            .map_err(|_| ContentTransferError::NotStarted)?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::RequestManifest {
+                peer_id,
+                cid: cid.clone(),
+                response: response_tx,
+            })
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Failed to send command: {}", e),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Response channel closed: {}", e),
+            })?
+    }
+
+    /// Request a block with retry logic.
+    ///
+    /// Automatically retries on transient failures.
+    pub async fn request_block_with_retry(
+        &self,
+        peer_id: PeerId,
+        cid: ContentId,
+        max_retries: u32,
+        retry_delay: Duration,
+    ) -> Result<Block, ContentTransferError> {
+        let mut last_error = None;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                debug!(attempt, cid = %cid, "Retrying block request");
+                tokio::time::sleep(retry_delay).await;
+            }
+
+            match self.request_block(peer_id, cid.clone()).await {
+                Ok(block) => return Ok(block),
+                Err(e) => {
+                    // Don't retry on NotFound - it's definitive
+                    if matches!(e, ContentTransferError::NotFound { .. }) {
+                        return Err(e);
+                    }
+                    warn!(
+                        attempt,
+                        max_retries,
+                        error = %e,
+                        "Block request failed, will retry"
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(
+            last_error.unwrap_or(ContentTransferError::RetriesExhausted {
+                attempts: max_retries + 1,
+            }),
+        )
     }
 }
 
@@ -1273,6 +1473,10 @@ impl NetworkEventLoop {
                 self.handle_gossipsub_event(event).await;
             }
 
+            SwarmEvent::Behaviour(FlowBehaviourEvent::ContentTransfer(event)) => {
+                self.handle_content_transfer_event(event).await;
+            }
+
             event => {
                 debug!("Unhandled swarm event: {:?}", event);
             }
@@ -1427,6 +1631,22 @@ impl NetworkEventLoop {
                 let ident_topic = IdentTopic::new(&topic);
                 let peers = self.swarm.behaviour().mesh_peers(&ident_topic.hash());
                 let _ = response.send(peers);
+            }
+
+            NetworkCommand::RequestBlock {
+                peer_id,
+                cid,
+                response,
+            } => {
+                self.handle_request_block(peer_id, cid, response);
+            }
+
+            NetworkCommand::RequestManifest {
+                peer_id,
+                cid,
+                response,
+            } => {
+                self.handle_request_manifest(peer_id, cid, response);
             }
         }
 
@@ -1629,6 +1849,320 @@ impl NetworkEventLoop {
             }
 
             _ => {}
+        }
+    }
+
+    /// Handle content transfer request-response events
+    async fn handle_content_transfer_event(
+        &mut self,
+        event: request_response::Event<ContentRequest, ContentResponse>,
+    ) {
+        use request_response::Event::*;
+        use request_response::Message::*;
+
+        match event {
+            // Incoming request from a peer
+            Message {
+                peer,
+                message: Request {
+                    request, channel, ..
+                },
+                ..
+            } => {
+                info!(peer = %peer, request = ?request, "Received content request");
+                self.handle_incoming_content_request(peer, request, channel)
+                    .await;
+            }
+
+            // Response to our outbound request
+            Message {
+                peer,
+                message:
+                    Response {
+                        request_id,
+                        response,
+                    },
+                ..
+            } => {
+                debug!(peer = %peer, request_id = ?request_id, "Received content response");
+                self.handle_content_response(request_id, response);
+            }
+
+            // Outbound request failed
+            OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                warn!(
+                    peer = %peer,
+                    request_id = ?request_id,
+                    error = ?error,
+                    "Content request failed"
+                );
+                self.handle_content_request_failure(request_id, error);
+            }
+
+            // Inbound request failed (we couldn't send response)
+            InboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                warn!(
+                    peer = %peer,
+                    request_id = ?request_id,
+                    error = ?error,
+                    "Failed to send content response"
+                );
+            }
+
+            // Response sent successfully
+            ResponseSent {
+                peer, request_id, ..
+            } => {
+                debug!(peer = %peer, request_id = ?request_id, "Content response sent");
+            }
+        }
+    }
+
+    /// Handle incoming content request - serve from local BlockStore
+    async fn handle_incoming_content_request(
+        &mut self,
+        peer: PeerId,
+        request: ContentRequest,
+        channel: request_response::ResponseChannel<ContentResponse>,
+    ) {
+        let response = match &self.block_store {
+            Some(store) => {
+                match &request {
+                    ContentRequest::GetBlock { cid } => match store.get(cid) {
+                        Ok(Some(block)) => {
+                            info!(peer = %peer, cid = %cid, "Serving block");
+                            ContentResponse::block(
+                                cid.clone(),
+                                block.data().to_vec(),
+                                block.links().to_vec(),
+                            )
+                        }
+                        Ok(None) => {
+                            debug!(peer = %peer, cid = %cid, "Block not found");
+                            ContentResponse::not_found(cid.clone())
+                        }
+                        Err(e) => {
+                            error!(peer = %peer, cid = %cid, error = %e, "BlockStore error");
+                            ContentResponse::error(
+                                super::content_transfer::ErrorCode::InternalError,
+                                format!("Storage error: {}", e),
+                            )
+                        }
+                    },
+                    ContentRequest::GetManifest { cid } => {
+                        match store.get(cid) {
+                            Ok(Some(block)) => {
+                                // Manifest is stored as DAG-CBOR block
+                                info!(peer = %peer, cid = %cid, "Serving manifest");
+                                ContentResponse::manifest(cid.clone(), block.data().to_vec())
+                            }
+                            Ok(None) => {
+                                debug!(peer = %peer, cid = %cid, "Manifest not found");
+                                ContentResponse::not_found(cid.clone())
+                            }
+                            Err(e) => {
+                                error!(peer = %peer, cid = %cid, error = %e, "BlockStore error");
+                                ContentResponse::error(
+                                    super::content_transfer::ErrorCode::InternalError,
+                                    format!("Storage error: {}", e),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                warn!(peer = %peer, "No BlockStore configured, cannot serve content");
+                ContentResponse::error(
+                    super::content_transfer::ErrorCode::InternalError,
+                    "Content storage not available".to_string(),
+                )
+            }
+        };
+
+        if let Err(resp) = self
+            .swarm
+            .behaviour_mut()
+            .send_content_response(channel, response)
+        {
+            error!(peer = %peer, "Failed to send content response: {:?}", resp);
+        }
+    }
+
+    /// Handle successful content response
+    fn handle_content_response(
+        &mut self,
+        request_id: OutboundRequestId,
+        response: ContentResponse,
+    ) {
+        if let Some(pending) = self.pending_content_requests.remove(&request_id) {
+            let _ = pending.response_tx.send(Ok(response));
+        } else {
+            warn!(request_id = ?request_id, "Received response for unknown request");
+        }
+    }
+
+    /// Handle content request failure
+    fn handle_content_request_failure(
+        &mut self,
+        request_id: OutboundRequestId,
+        error: request_response::OutboundFailure,
+    ) {
+        if let Some(pending) = self.pending_content_requests.remove(&request_id) {
+            let err = match error {
+                request_response::OutboundFailure::DialFailure => {
+                    ContentTransferError::PeerDisconnected {
+                        peer_id: pending.peer_id.to_string(),
+                    }
+                }
+                request_response::OutboundFailure::Timeout => ContentTransferError::Timeout {
+                    timeout_secs: self.content_transfer_config.request_timeout_secs,
+                },
+                request_response::OutboundFailure::ConnectionClosed => {
+                    ContentTransferError::PeerDisconnected {
+                        peer_id: pending.peer_id.to_string(),
+                    }
+                }
+                request_response::OutboundFailure::UnsupportedProtocols => {
+                    ContentTransferError::RequestFailed {
+                        message: "Peer does not support content transfer protocol".to_string(),
+                    }
+                }
+                request_response::OutboundFailure::Io(e) => ContentTransferError::RequestFailed {
+                    message: format!("I/O error: {}", e),
+                },
+            };
+            let _ = pending.response_tx.send(Err(err));
+        }
+    }
+
+    fn handle_request_block(
+        &mut self,
+        peer_id: PeerId,
+        cid: ContentId,
+        response_tx: oneshot::Sender<Result<Block, ContentTransferError>>,
+    ) {
+        let request = ContentRequest::get_block(cid.clone());
+
+        // Wrap the block response sender in a ContentResponse handler
+        let (content_tx, content_rx) = oneshot::channel();
+
+        // Spawn a task to convert ContentResponse to Block
+        let cid_clone = cid.clone();
+        tokio::spawn(async move {
+            let result = match content_rx.await {
+                Ok(Ok(ContentResponse::Block { data, links, .. })) => {
+                    match Block::from_parts(cid_clone.clone(), data, links) {
+                        Ok(block) => Ok(block),
+                        Err(e) => Err(ContentTransferError::RequestFailed {
+                            message: format!("Invalid block data: {}", e),
+                        }),
+                    }
+                }
+                Ok(Ok(ContentResponse::NotFound { cid })) => Err(ContentTransferError::NotFound {
+                    cid: cid.to_string(),
+                }),
+                Ok(Ok(ContentResponse::Error { code, message, .. })) => {
+                    Err(ContentTransferError::RemoteError {
+                        code: code.to_string(),
+                        message,
+                    })
+                }
+                Ok(Ok(_)) => Err(ContentTransferError::RequestFailed {
+                    message: "Unexpected response type".to_string(),
+                }),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ContentTransferError::Internal {
+                    message: "Response channel closed".to_string(),
+                }),
+            };
+            let _ = response_tx.send(result);
+        });
+
+        self.send_content_request(peer_id, cid, request, content_tx);
+    }
+
+    fn handle_request_manifest(
+        &mut self,
+        peer_id: PeerId,
+        cid: ContentId,
+        response_tx: oneshot::Sender<Result<DocumentManifest, ContentTransferError>>,
+    ) {
+        let request = ContentRequest::get_manifest(cid.clone());
+
+        let (content_tx, content_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let result = match content_rx.await {
+                Ok(Ok(ContentResponse::Manifest { data, .. })) => {
+                    match DocumentManifest::from_dag_cbor(&data) {
+                        Ok(manifest) => Ok(manifest),
+                        Err(e) => Err(ContentTransferError::RequestFailed {
+                            message: format!("Invalid manifest data: {}", e),
+                        }),
+                    }
+                }
+                Ok(Ok(ContentResponse::NotFound { cid })) => Err(ContentTransferError::NotFound {
+                    cid: cid.to_string(),
+                }),
+                Ok(Ok(ContentResponse::Error { code, message, .. })) => {
+                    Err(ContentTransferError::RemoteError {
+                        code: code.to_string(),
+                        message,
+                    })
+                }
+                Ok(Ok(_)) => Err(ContentTransferError::RequestFailed {
+                    message: "Unexpected response type".to_string(),
+                }),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ContentTransferError::Internal {
+                    message: "Response channel closed".to_string(),
+                }),
+            };
+            let _ = response_tx.send(result);
+        });
+
+        self.send_content_request(peer_id, cid, request, content_tx);
+    }
+
+    fn send_content_request(
+        &mut self,
+        peer_id: PeerId,
+        cid: ContentId,
+        request: ContentRequest,
+        response_tx: oneshot::Sender<Result<ContentResponse, ContentTransferError>>,
+    ) {
+        match self
+            .swarm
+            .behaviour_mut()
+            .send_content_request(&peer_id, request)
+        {
+            Some(request_id) => {
+                self.pending_content_requests.insert(
+                    request_id,
+                    PendingContentRequest {
+                        response_tx,
+                        cid,
+                        peer_id,
+                        created_at: std::time::Instant::now(),
+                    },
+                );
+            }
+            None => {
+                let _ = response_tx.send(Err(ContentTransferError::RequestFailed {
+                    message: "Content transfer not enabled".to_string(),
+                }));
+            }
         }
     }
 
