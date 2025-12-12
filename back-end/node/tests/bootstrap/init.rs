@@ -77,6 +77,12 @@ pub fn setup_test_env(temp_dir: &TempDir, test_name: &str) {
             "BLOCK_STORE_PATH",
             temp_dir.path().join(format!("{}_blocks", test_name)),
         );
+        std::env::set_var(
+            "PROVIDER_REGISTRY_DB_PATH",
+            temp_dir
+                .path()
+                .join(format!("{}_provider_registry", test_name)),
+        );
     }
 }
 

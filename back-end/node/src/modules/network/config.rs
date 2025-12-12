@@ -1,7 +1,9 @@
+use crate::bootstrap::init::get_flow_data_dir;
 use crate::modules::network::gossipsub::GossipSubConfig;
 use libp2p::Multiaddr;
 use std::env;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::error;
 
 const DEFAULT_P2P_SERVICE_NAME: &str = "_flow-p2p._udp.local";
@@ -12,6 +14,9 @@ const DEFAULT_RESERVED_OUTBOUND_CONNECTIONS: usize = 20;
 const DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS: u64 = 100;
 const DEFAULT_BOOTSTRAP_MAX_RETRIES: u32 = 3;
 const DEFAULT_BOOTSTRAP_RETRY_DELAY_MS: u64 = 1000;
+const DEFAULT_REPROVIDE_INTERVAL_SECS: u64 = 12 * 60 * 60;
+const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 30;
 
 /// mDNS discovery configuration
 #[derive(Debug, Clone)]
@@ -34,6 +39,96 @@ impl Default for MdnsConfig {
             service_name: DEFAULT_P2P_SERVICE_NAME.to_string(),
             query_interval_secs: 30,
         }
+    }
+}
+
+/// Configuration for DHT provider behavior
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    /// Path to RocksDB directory for provider registry
+    pub db_path: std::path::PathBuf,
+
+    /// Enable automatic re-announcement of provided content
+    pub auto_reprovide_enabled: bool,
+
+    /// Interval between re-announcements in seconds
+    pub reprovide_interval_secs: u64,
+
+    /// Timeout for pending provider queries in seconds
+    pub query_timeout_secs: u64,
+
+    /// Interval for cleanup task in seconds
+    pub cleanup_interval_secs: u64,
+
+    /// Reprovide all CIDs immediately on startup
+    pub reprovide_on_startup: bool,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            db_path: get_flow_data_dir()
+                .join("network")
+                .join("provider_registry"),
+            auto_reprovide_enabled: true,
+            reprovide_interval_secs: DEFAULT_REPROVIDE_INTERVAL_SECS,
+            query_timeout_secs: DEFAULT_QUERY_TIMEOUT_SECS,
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            reprovide_on_startup: true,
+        }
+    }
+}
+
+impl ProviderConfig {
+    /// Load configuration from environment variables
+    pub fn from_env() -> Self {
+        let db_path = env::var("PROVIDER_REGISTRY_DB_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| Self::default().db_path);
+
+        let auto_reprovide_enabled = env::var("PROVIDER_AUTO_REPROVIDE")
+            .map(|v| v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        let reprovide_interval_secs = env::var("PROVIDER_REPROVIDE_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_REPROVIDE_INTERVAL_SECS);
+
+        let query_timeout_secs = env::var("PROVIDER_QUERY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_QUERY_TIMEOUT_SECS);
+
+        let cleanup_interval_secs = env::var("PROVIDER_CLEANUP_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CLEANUP_INTERVAL_SECS);
+
+        let reprovide_on_startup = env::var("PROVIDER_REPROVIDE_ON_STARTUP")
+            .map(|v| v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        Self {
+            db_path,
+            auto_reprovide_enabled,
+            reprovide_interval_secs,
+            query_timeout_secs,
+            cleanup_interval_secs,
+            reprovide_on_startup,
+        }
+    }
+
+    pub fn reprovide_interval(&self) -> Duration {
+        Duration::from_secs(self.reprovide_interval_secs)
+    }
+
+    pub fn query_timeout(&self) -> Duration {
+        Duration::from_secs(self.query_timeout_secs)
+    }
+
+    pub fn cleanup_interval(&self) -> Duration {
+        Duration::from_secs(self.cleanup_interval_secs)
     }
 }
 
@@ -187,6 +282,8 @@ pub struct NetworkConfig {
 
     /// GossipSub configuration
     pub gossipsub: GossipSubConfig,
+
+    pub provider: ProviderConfig,
 }
 
 impl Default for NetworkConfig {
@@ -199,6 +296,7 @@ impl Default for NetworkConfig {
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
             gossipsub: GossipSubConfig::default(),
+            provider: ProviderConfig::default(),
         }
     }
 }
@@ -323,6 +421,7 @@ impl NetworkConfig {
                 retry_delay_base_ms: bootstrap_retry_delay_ms,
             },
             gossipsub: GossipSubConfig::from_env(),
+            provider: ProviderConfig::from_env(),
         }
     }
 }

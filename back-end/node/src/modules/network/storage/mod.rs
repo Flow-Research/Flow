@@ -1,4 +1,5 @@
 pub mod peer_registry_store;
+pub mod provider_registry_store;
 pub mod rocksdb_store;
 
 use std::env;

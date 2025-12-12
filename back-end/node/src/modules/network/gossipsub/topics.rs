@@ -7,6 +7,8 @@ pub const TOPIC_PREFIX: &str = "/flow/v1";
 /// System topic constants for direct use
 pub const SYSTEM_NETWORK_EVENTS_TOPIC: &str = "/flow/v1/system/network-events";
 
+pub const CONTENT_ANNOUNCEMENTS: &str = "/flow/v1/content/announcements";
+
 /// Pre-defined Flow topics
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Topic {
@@ -25,6 +27,9 @@ pub enum Topic {
     /// Network-wide announcements
     Announcements,
 
+    /// Content publication announcements
+    ContentAnnouncements,
+
     /// Custom topic
     Custom(String),
 }
@@ -40,6 +45,9 @@ impl Topic {
             Topic::AgentStatus => format!("{}/agents/status", TOPIC_PREFIX),
             Topic::ComputeOffers => format!("{}/compute/offers", TOPIC_PREFIX),
             Topic::Announcements => format!("{}/announcements", TOPIC_PREFIX),
+            Topic::ContentAnnouncements => {
+                format!("{}/content/announcements", TOPIC_PREFIX)
+            }
             Topic::Custom(name) => format!("{}/custom/{}", TOPIC_PREFIX, name),
         }
     }
@@ -72,6 +80,7 @@ impl Topic {
             "/agents/status" => Some(Topic::AgentStatus),
             "/compute/offers" => Some(Topic::ComputeOffers),
             "/announcements" => Some(Topic::Announcements),
+            "/content/announcements" => Some(Topic::ContentAnnouncements),
             s if s.starts_with("/custom/") => {
                 let name = s.strip_prefix("/custom/")?;
                 Some(Topic::Custom(name.to_string()))
@@ -162,5 +171,17 @@ mod tests {
         let hash2 = topic.hash();
 
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_content_announcements_topic() {
+        assert_eq!(
+            Topic::ContentAnnouncements.to_topic_string(),
+            "/flow/v1/content/announcements"
+        );
+        assert_eq!(
+            Topic::from_topic_string("/flow/v1/content/announcements"),
+            Some(Topic::ContentAnnouncements)
+        );
     }
 }

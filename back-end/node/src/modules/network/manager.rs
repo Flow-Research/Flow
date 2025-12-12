@@ -1,5 +1,6 @@
 use crate::bootstrap::init::NodeData;
 use crate::modules::network::behaviour::FlowBehaviourEvent;
+use crate::modules::network::config::ProviderConfig;
 use crate::modules::network::config::{BootstrapConfig, ConnectionLimitPolicy, ConnectionLimits};
 use crate::modules::network::content_transfer::{
     ContentRequest, ContentResponse, ContentTransferConfig, ContentTransferError,
@@ -14,6 +15,9 @@ use crate::modules::network::peer_registry::{
 use crate::modules::network::persistent_peer_registry::{
     PeerRegistryConfig, PersistentPeerRegistry,
 };
+use crate::modules::network::persistent_provider_registry::{
+    PersistentProviderRegistry, ProviderRegistryConfig,
+};
 use crate::modules::network::storage::{RocksDbStore, StorageConfig};
 use crate::modules::network::{behaviour::FlowBehaviour, config::NetworkConfig, keypair};
 use crate::modules::storage::content::{
@@ -21,7 +25,7 @@ use crate::modules::storage::content::{
 };
 use errors::AppError;
 use libp2p::gossipsub::{self, IdentTopic};
-use libp2p::kad::QueryResult;
+use libp2p::kad::{QueryId, QueryResult, RecordKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, OutboundRequestId};
 use libp2p::{Multiaddr, PeerId, Swarm, futures::StreamExt, identity::Keypair, noise, tcp, yamux};
@@ -41,6 +45,27 @@ pub struct BootstrapResult {
     pub failed_count: usize,
     /// Whether Kademlia bootstrap query was initiated
     pub query_initiated: bool,
+}
+
+/// Result of a provider announcement
+#[derive(Debug, Clone)]
+pub struct ProviderAnnounceResult {
+    /// The Kademlia query ID
+    pub query_id: QueryId,
+}
+
+/// Callback for provider announcement confirmation.
+/// Called with (cid, result) when DHT announcement completes.
+pub type ProviderConfirmationCallback = Arc<dyn Fn(ContentId, Result<(), String>) + Send + Sync>;
+
+/// Tracks a pending start_providing query for confirmation callbacks.
+struct PendingProviderAnnouncement {
+    /// The CID being announced
+    cid: ContentId,
+    /// Optional callback to invoke on completion
+    callback: Option<ProviderConfirmationCallback>,
+    /// When the announcement was initiated
+    created_at: std::time::Instant,
 }
 
 /// High-level network manager providing thread-safe access to P2P networking
@@ -152,6 +177,37 @@ enum NetworkCommand {
         cid: ContentId,
         response: oneshot::Sender<Result<DocumentManifest, ContentTransferError>>,
     },
+
+    /// Start providing content (DHT provider announcement)
+    StartProviding {
+        cid: ContentId,
+        response: oneshot::Sender<Result<QueryId, String>>,
+    },
+
+    /// Stop providing content
+    StopProviding {
+        cid: ContentId,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+
+    /// Start providing content with optional confirmation callback
+    StartProvidingWithCallback {
+        cid: ContentId,
+        callback: Option<ProviderConfirmationCallback>,
+        response: oneshot::Sender<Result<QueryId, String>>,
+    },
+
+    /// Query DHT for content providers
+    GetProviders {
+        cid: ContentId,
+        response: oneshot::Sender<Result<HashSet<PeerId>, String>>,
+    },
+
+    /// Check local block store for a block
+    GetLocalBlock {
+        cid: ContentId,
+        response: oneshot::Sender<Option<Block>>,
+    },
 }
 
 /// Connection capacity status
@@ -230,6 +286,18 @@ struct NetworkEventLoop {
 
     /// Content transfer configuration
     content_transfer_config: ContentTransferConfig,
+
+    /// Pending provider discovery queries (QueryId → pending query state)
+    pending_provider_queries: HashMap<QueryId, PendingProviderQuery>,
+
+    /// Persistent provider registry (CIDs we're providing)
+    provider_registry: Arc<PersistentProviderRegistry>,
+
+    /// Pending provider announcement queries (for confirmation callbacks)
+    pending_provider_announcements: HashMap<QueryId, PendingProviderAnnouncement>,
+
+    /// Provider configuration
+    provider_config: ProviderConfig,
 }
 
 /// Tracks a pending content request.
@@ -242,6 +310,27 @@ struct PendingContentRequest {
     peer_id: PeerId,
     /// When the request was created.
     created_at: std::time::Instant,
+}
+
+/// Tracks a pending get_providers DHT query.
+struct PendingProviderQuery {
+    /// Channel to send discovered providers back to caller.
+    response_tx: oneshot::Sender<Result<HashSet<PeerId>, String>>,
+    /// The CID being queried.
+    cid: ContentId,
+    /// Accumulated providers discovered so far.
+    providers: HashSet<PeerId>,
+    /// When the query was started.
+    created_at: std::time::Instant,
+}
+
+/// Result of provider discovery
+#[derive(Debug, Clone)]
+pub struct ProviderDiscoveryResult {
+    /// The CID that was queried
+    pub cid: ContentId,
+    /// Discovered provider peer IDs
+    pub providers: Vec<PeerId>,
 }
 
 impl NetworkManager {
@@ -509,6 +598,21 @@ impl NetworkManager {
 
         persistent_registry.start_background_flush();
 
+        // Create provider registry
+        let provider_registry_config = ProviderRegistryConfig::from(&config.provider);
+        let provider_registry =
+            PersistentProviderRegistry::new(provider_registry_config).map_err(|e| {
+                AppError::Network(format!(
+                    "Failed to create persistent provider registry: {}",
+                    e
+                ))
+            })?;
+
+        info!(
+            provided_cid_count = provider_registry.count(),
+            "Provider registry initialized"
+        );
+
         // Parse bootstrap peers and load into registry
         let (bootstrap_peer_ids, bootstrap_known_peers) =
             Self::parse_bootstrap_peers(&config.bootstrap_peers);
@@ -540,6 +644,10 @@ impl NetworkManager {
             block_store,
             pending_content_requests: HashMap::new(),
             content_transfer_config,
+            pending_provider_queries: HashMap::new(),
+            provider_registry: Arc::new(provider_registry),
+            pending_provider_announcements: HashMap::new(),
+            provider_config: config.provider.clone(),
         })
     }
 
@@ -1046,6 +1154,399 @@ impl NetworkManager {
             }),
         )
     }
+
+    /// Announce this node as a provider for the given content.
+    ///
+    /// This registers us in the Kademlia DHT as a provider for the content,
+    /// allowing other peers to discover that we have this content available.
+    ///
+    /// # Arguments
+    /// * `cid` - The ContentId of the content we're providing
+    ///
+    /// # Returns
+    /// * `Ok(ProviderAnnounceResult)` - The query was initiated successfully
+    /// * `Err(AppError)` - Failed to initiate the query
+    ///
+    /// # Example
+    ///
+    /// let cid = ContentId::from_bytes(b"hello world");
+    /// let result = manager.start_providing(cid).await?;
+    /// info!("Provider announcement started: {:?}", result.query_id);
+    #[instrument(skip(self), fields(cid = %cid))]
+    pub async fn start_providing(
+        &self,
+        cid: ContentId,
+    ) -> Result<ProviderAnnounceResult, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::StartProviding {
+                cid: cid.clone(),
+                response: response_tx,
+            })
+            .map_err(|_| AppError::Network("Failed to send start_providing command".to_string()))?;
+
+        let query_id = response_rx
+            .await
+            .map_err(|_| AppError::Network("start_providing response channel closed".to_string()))?
+            .map_err(|e| AppError::Network(format!("start_providing failed: {}", e)))?;
+
+        info!(%cid, ?query_id, "Provider announcement initiated");
+
+        Ok(ProviderAnnounceResult { query_id })
+    }
+
+    /// Start providing content with optional confirmation callback.
+    ///
+    /// The callback is invoked when the DHT confirms the provider record
+    /// has been stored, or when the announcement fails or times out.
+    #[instrument(skip(self, callback), fields(cid = %cid))]
+    pub async fn start_providing_with_callback(
+        &self,
+        cid: ContentId,
+        callback: Option<ProviderConfirmationCallback>,
+    ) -> Result<ProviderAnnounceResult, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::StartProvidingWithCallback {
+                cid: cid.clone(),
+                callback,
+                response: response_tx,
+            })
+            .map_err(|_| AppError::Network("Failed to send command".to_string()))?;
+
+        let query_id = response_rx
+            .await
+            .map_err(|_| AppError::Network("Response channel closed".to_string()))?
+            .map_err(|e| AppError::Network(format!("start_providing failed: {}", e)))?;
+
+        info!(%cid, ?query_id, "Provider announcement with callback initiated");
+
+        Ok(ProviderAnnounceResult { query_id })
+    }
+
+    /// Stop providing content (remove provider record from DHT).
+    ///
+    /// Note: This only removes the local announcement. Existing DHT records
+    /// will expire naturally based on Kademlia's record TTL.
+    #[instrument(skip(self), fields(cid = %cid))]
+    pub async fn stop_providing(&self, cid: ContentId) -> Result<(), AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::StopProviding {
+                cid: cid.clone(),
+                response: response_tx,
+            })
+            .map_err(|_| AppError::Network("Failed to send stop_providing command".to_string()))?;
+
+        response_rx
+            .await
+            .map_err(|_| AppError::Network("stop_providing response channel closed".to_string()))?
+            .map_err(|e| AppError::Network(format!("stop_providing failed: {}", e)))?;
+
+        info!(%cid, "Stopped providing content");
+
+        Ok(())
+    }
+
+    /// Discover peers that are providing the given content.
+    ///
+    /// Queries the Kademlia DHT to find peers that have announced themselves
+    /// as providers for the content. This is useful for finding who has
+    /// content before requesting it.
+    ///
+    /// # Arguments
+    /// * `cid` - The ContentId to find providers for
+    ///
+    /// # Returns
+    /// * `Ok(ProviderDiscoveryResult)` - Contains list of discovered provider PeerIds
+    /// * `Err(AppError)` - Query failed or timed out
+    #[instrument(skip(self), fields(cid = %cid))]
+    pub async fn get_providers(&self, cid: ContentId) -> Result<ProviderDiscoveryResult, AppError> {
+        self.ensure_started().await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::GetProviders {
+                cid: cid.clone(),
+                response: response_tx,
+            })
+            .map_err(|_| AppError::Network("Failed to send get_providers command".to_string()))?;
+
+        let providers = response_rx
+            .await
+            .map_err(|_| AppError::Network("get_providers response channel closed".to_string()))?
+            .map_err(|e| AppError::Network(format!("get_providers failed: {}", e)))?;
+
+        let provider_count = providers.len();
+        info!(%cid, provider_count, "Provider discovery completed");
+
+        Ok(ProviderDiscoveryResult {
+            cid,
+            providers: providers.into_iter().collect(),
+        })
+    }
+
+    /// Fetch a block from the network with automatic content routing.
+    ///
+    /// This method implements smart content discovery:
+    /// 1. First checks the local BlockStore (if available)
+    /// 2. If not found locally, queries DHT for providers
+    /// 3. Attempts to fetch from discovered providers
+    ///
+    /// # Arguments
+    /// * `cid` - The ContentId of the block to fetch
+    ///
+    /// # Returns
+    /// * `Ok(Block)` - The block was found and retrieved
+    /// * `Err(ContentTransferError)` - Block not found or all providers failed
+    #[instrument(skip(self), fields(cid = %cid))]
+    pub async fn fetch_block(&self, cid: ContentId) -> Result<Block, ContentTransferError> {
+        self.ensure_started()
+            .await
+            .map_err(|_| ContentTransferError::NotStarted)?;
+
+        // Step 1: Try local block store first
+        // Note: We send a command to check since block_store is in the event loop
+        debug!(%cid, "Attempting to fetch block - checking local store first");
+
+        if let Some(block) = self.get_local_block(cid.clone()).await? {
+            info!(%cid, "Block found in local store");
+            return Ok(block);
+        }
+
+        // Step 2: Query DHT for providers
+        debug!(%cid, "Block not in local store, querying DHT for providers");
+
+        let discovery_result =
+            self.get_providers(cid.clone())
+                .await
+                .map_err(|e| ContentTransferError::Internal {
+                    message: format!("Provider discovery failed: {}", e),
+                })?;
+
+        if discovery_result.providers.is_empty() {
+            warn!(%cid, "No providers found for content");
+            return Err(ContentTransferError::NotFound {
+                cid: cid.to_string(),
+            });
+        }
+
+        info!(
+            %cid,
+            provider_count = discovery_result.providers.len(),
+            "Found providers, attempting to fetch"
+        );
+
+        // Step 3: Try each provider until success
+        let max_attempts = 3.min(discovery_result.providers.len());
+        let mut last_error = None;
+
+        for (i, peer_id) in discovery_result
+            .providers
+            .iter()
+            .take(max_attempts)
+            .enumerate()
+        {
+            debug!(
+                %cid,
+                %peer_id,
+                attempt = i + 1,
+                max_attempts,
+                "Requesting block from provider"
+            );
+
+            match self.request_block(*peer_id, cid.clone()).await {
+                Ok(block) => {
+                    info!(%cid, %peer_id, "Successfully fetched block from provider");
+                    return Ok(block);
+                }
+                Err(e) => {
+                    warn!(
+                        %cid,
+                        %peer_id,
+                        error = %e,
+                        attempt = i + 1,
+                        "Failed to fetch from provider"
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(ContentTransferError::NotFound {
+            cid: cid.to_string(),
+        }))
+    }
+
+    /// Check if a block exists locally without network access
+    async fn get_local_block(&self, cid: ContentId) -> Result<Option<Block>, ContentTransferError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NetworkCommand::GetLocalBlock {
+                cid,
+                response: response_tx,
+            })
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Failed to send command: {}", e),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|e| ContentTransferError::Internal {
+                message: format!("Response channel closed: {}", e),
+            })
+    }
+
+    /// Fetch a manifest from the network with automatic content routing.
+    ///
+    /// Similar to `fetch_block` but for manifests.
+    #[instrument(skip(self), fields(cid = %cid))]
+    pub async fn fetch_manifest(
+        &self,
+        cid: ContentId,
+    ) -> Result<DocumentManifest, ContentTransferError> {
+        self.ensure_started()
+            .await
+            .map_err(|_| ContentTransferError::NotStarted)?;
+
+        debug!(%cid, "Fetching manifest via content routing");
+
+        // Query DHT for providers
+        let discovery_result =
+            self.get_providers(cid.clone())
+                .await
+                .map_err(|e| ContentTransferError::Internal {
+                    message: format!("Provider discovery failed: {}", e),
+                })?;
+
+        if discovery_result.providers.is_empty() {
+            warn!(%cid, "No providers found for manifest");
+            return Err(ContentTransferError::NotFound {
+                cid: cid.to_string(),
+            });
+        }
+
+        // Try each provider
+        let max_attempts = 3.min(discovery_result.providers.len());
+        let mut last_error = None;
+
+        for (i, peer_id) in discovery_result
+            .providers
+            .iter()
+            .take(max_attempts)
+            .enumerate()
+        {
+            debug!(%cid, %peer_id, attempt = i + 1, "Requesting manifest from provider");
+
+            match self.request_manifest(*peer_id, cid.clone()).await {
+                Ok(manifest) => {
+                    info!(%cid, %peer_id, "Successfully fetched manifest from provider");
+                    return Ok(manifest);
+                }
+                Err(e) => {
+                    warn!(%cid, %peer_id, error = %e, "Failed to fetch manifest from provider");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(ContentTransferError::NotFound {
+            cid: cid.to_string(),
+        }))
+    }
+
+    /// Announce that content has been published.
+    ///
+    /// This publishes a `ContentPublished` message to the `ContentAnnouncements` topic
+    /// via GossipSub, allowing subscribers to proactively discover and fetch new content.
+    ///
+    /// # Arguments
+    /// * `cid` - Content identifier of the published content
+    /// * `name` - Human-readable name/filename
+    /// * `size` - Size of the content in bytes
+    /// * `content_type` - MIME type or content type descriptor
+    ///
+    /// # Example
+    /// ```ignore
+    /// let cid = ContentId::from_bytes(content_data);
+    /// manager.announce_content_published(
+    ///     cid,
+    ///     "document.pdf".to_string(),
+    ///     content_data.len() as u64,
+    ///     "application/pdf".to_string(),
+    /// ).await?;
+    /// ```
+    #[instrument(skip(self), fields(cid = %cid, name = %name, size = size))]
+    pub async fn announce_content_published(
+        &self,
+        cid: ContentId,
+        name: String,
+        size: u64,
+        content_type: String,
+    ) -> Result<String, AppError> {
+        self.ensure_started().await?;
+
+        let payload = MessagePayload::ContentPublished {
+            cid,
+            name: name.clone(),
+            size,
+            content_type: content_type.clone(),
+        };
+
+        info!(
+            content_name = %name,
+            content_type = %content_type,
+            size_bytes = size,
+            "Announcing content publication via GossipSub"
+        );
+
+        self.publish_to_topic(&Topic::ContentAnnouncements, payload)
+            .await
+    }
+
+    /// Publish content and announce it to the network.
+    ///
+    /// Convenience method that:
+    /// 1. Announces provider status in the DHT via `start_providing()`
+    /// 2. Publishes a `ContentPublished` message via GossipSub
+    ///
+    /// # Arguments
+    /// * `cid` - Content identifier
+    /// * `name` - Human-readable name
+    /// * `size` - Content size in bytes
+    /// * `content_type` - MIME type
+    ///
+    /// # Returns
+    /// `(ProviderAnnounceResult, GossipSubMessageId)`
+    #[instrument(skip(self), fields(cid = %cid, name = %name))]
+    pub async fn publish_and_announce(
+        &self,
+        cid: ContentId,
+        name: String,
+        size: u64,
+        content_type: String,
+    ) -> Result<(ProviderAnnounceResult, String), AppError> {
+        // 1. Announce in DHT
+        let provider_result = self.start_providing(cid.clone()).await?;
+
+        // 2. Announce via GossipSub
+        let message_id = self
+            .announce_content_published(cid, name, size, content_type)
+            .await?;
+
+        Ok((provider_result, message_id))
+    }
 }
 
 impl NetworkEventLoop {
@@ -1082,28 +1583,58 @@ impl NetworkEventLoop {
         let mut retry_interval = tokio::time::interval(Duration::from_secs(5));
         retry_interval.tick().await; // Skip immediate first tick
 
+        // Reprovide timer
+        let mut reprovide_timer = tokio::time::interval(self.provider_config.reprovide_interval());
+        reprovide_timer.tick().await; // skip immediate tick
+
+        let should_reprovide_on_startup = self.provider_config.reprovide_on_startup
+            && self.provider_config.auto_reprovide_enabled
+            && !self.provider_registry.is_empty();
+
+        // Cleanup timer
+        let mut cleanup_timer = tokio::time::interval(self.provider_config.cleanup_interval());
+        cleanup_timer.tick().await; // skip immediate tick
+
+        let mut startup_reprovide_done = false;
+
         loop {
             tokio::select! {
-            // One-shot initial bootstrap trigger
-            _ = &mut bootstrap_delay, if !self.bootstrap_initiated => {
-                self.execute_bootstrap();
-            }
+                // One-shot initial bootstrap trigger
+                _ = &mut bootstrap_delay, if !self.bootstrap_initiated => {
+                    self.execute_bootstrap();
 
-            // Periodic retry of failed bootstrap peers
-            _ = retry_interval.tick(), if self.bootstrap_initiated && !self.bootstrap_peer_ids.is_empty() => {
-                self.retry_bootstrap_peers();
-            }
-
-            // Handle Swarm events
-            event = self.swarm.select_next_some() => {
-                self.handle_swarm_event(event).await;
-            }
-
-            // Handle commands
-            Some(command) = self.command_rx.recv() => {
-                if self.handle_command(command).await {
-                    break;
+                    if should_reprovide_on_startup && !startup_reprovide_done {
+                        info!("Triggering startup reprovide after bootstrap");
+                        self.reprovide_all();
+                        startup_reprovide_done = true;
+                    }
                 }
+
+                // Periodic retry of failed bootstrap peers
+                _ = retry_interval.tick(), if self.bootstrap_initiated && !self.bootstrap_peer_ids.is_empty() => {
+                    self.retry_bootstrap_peers();
+                }
+
+                _ = reprovide_timer.tick(),
+                    if self.provider_config.auto_reprovide_enabled && !self.provider_registry.is_empty() =>
+                {
+                    self.reprovide_all();
+                }
+
+                _ = cleanup_timer.tick() => {
+                    self.cleanup_stale_queries();
+                }
+
+                // Handle Swarm events
+                event = self.swarm.select_next_some() => {
+                    self.handle_swarm_event(event).await;
+                }
+
+                // Handle commands
+                Some(command) = self.command_rx.recv() => {
+                    if self.handle_command(command).await {
+                        break;
+                    }
                 }
             }
         }
@@ -1648,6 +2179,37 @@ impl NetworkEventLoop {
             } => {
                 self.handle_request_manifest(peer_id, cid, response);
             }
+
+            NetworkCommand::StartProviding { cid, response } => {
+                let result = self.handle_start_providing(&cid);
+                let _ = response.send(result);
+            }
+
+            NetworkCommand::StartProvidingWithCallback {
+                cid,
+                callback,
+                response,
+            } => {
+                let result = self.handle_start_providing_impl(&cid, callback);
+                let _ = response.send(result);
+            }
+
+            NetworkCommand::StopProviding { cid, response } => {
+                let result = self.handle_stop_providing(&cid);
+                let _ = response.send(result);
+            }
+
+            NetworkCommand::GetProviders { cid, response } => {
+                self.handle_get_providers(cid, response);
+            }
+
+            NetworkCommand::GetLocalBlock { cid, response } => {
+                let block = self
+                    .block_store
+                    .as_ref()
+                    .and_then(|store| store.get(&cid).ok().flatten());
+                let _ = response.send(block);
+            }
         }
 
         false
@@ -1676,18 +2238,163 @@ impl NetworkEventLoop {
                 // The connection will use the discovery source we just set
             }
 
-            Event::OutboundQueryProgressed { result, .. } => {
-                debug!("Kademlia query progressed: {:?}", result);
+            Event::OutboundQueryProgressed { id, result, .. } => match result {
+                QueryResult::GetClosestPeers(Ok(closest)) => {
+                    debug!(
+                        ?id,
+                        peers = closest.peers.len(),
+                        "GetClosestPeers completed"
+                    );
+                    for peer_info in &closest.peers {
+                        self.peer_discovery_source
+                            .insert(peer_info.peer_id, DiscoverySource::Dht);
+                    }
+                }
 
-                match result {
-                    QueryResult::GetClosestPeers(Ok(closest)) => {
-                        for peer_info in &closest.peers {
-                            self.peer_discovery_source
-                                .insert(peer_info.peer_id, DiscoverySource::Dht);
+                QueryResult::StartProviding(Ok(add_provider_ok)) => {
+                    info!(
+                        query_id = ?id,
+                        key = ?add_provider_ok.key,
+                        "Successfully announced as provider"
+                    );
+
+                    // Invoke callback and update metadata if tracked
+                    if let Some(pending) = self.pending_provider_announcements.remove(&id) {
+                        let elapsed = pending.created_at.elapsed();
+                        info!(
+                            %pending.cid,
+                            elapsed_ms = elapsed.as_millis(),
+                            "Provider announcement confirmed"
+                        );
+
+                        // Update announcement metadata
+                        if let Err(e) = self.provider_registry.record_announcement(&pending.cid) {
+                            warn!(%pending.cid, error = %e, "Failed to record announcement");
+                        }
+
+                        // Invoke callback
+                        if let Some(callback) = pending.callback {
+                            callback(pending.cid, Ok(()));
                         }
                     }
-                    _ => {}
                 }
+
+                QueryResult::StartProviding(Err(add_provider_err)) => {
+                    warn!(
+                        query_id = ?id,
+                        key = ?add_provider_err.key(),
+                        "Failed to announce as provider"
+                    );
+
+                    if let Some(pending) = self.pending_provider_announcements.remove(&id) {
+                        if let Some(callback) = pending.callback {
+                            callback(
+                                pending.cid,
+                                Err(format!(
+                                    "Provider announcement failed for key {:?}",
+                                    add_provider_err.key()
+                                )),
+                            );
+                        }
+                    }
+                }
+
+                QueryResult::GetProviders(Ok(get_providers_ok)) => match get_providers_ok {
+                    libp2p::kad::GetProvidersOk::FoundProviders { key, providers } => {
+                        debug!(
+                            query_id = ?id,
+                            key = ?key,
+                            provider_count = providers.len(),
+                            "GetProviders found providers"
+                        );
+
+                        // Accumulate providers in pending query
+                        if let Some(pending) = self.pending_provider_queries.get_mut(&id) {
+                            pending.providers.extend(providers);
+                            debug!(
+                                query_id = ?id,
+                                total_providers = pending.providers.len(),
+                                "Accumulated providers for query"
+                            );
+                        }
+                    }
+                    libp2p::kad::GetProvidersOk::FinishedWithNoAdditionalRecord {
+                        closest_peers,
+                    } => {
+                        debug!(
+                            query_id = ?id,
+                            closest_peers_count = closest_peers.len(),
+                            "GetProviders finished with no additional records"
+                        );
+
+                        // Complete the pending query
+                        if let Some(pending) = self.pending_provider_queries.remove(&id) {
+                            let provider_count = pending.providers.len();
+                            let elapsed = pending.created_at.elapsed();
+
+                            info!(
+                                %pending.cid,
+                                provider_count,
+                                elapsed_ms = elapsed.as_millis(),
+                                "Provider discovery completed"
+                            );
+
+                            let _ = pending.response_tx.send(Ok(pending.providers));
+                        }
+                    }
+                },
+
+                QueryResult::GetProviders(Err(get_providers_err)) => match get_providers_err {
+                    libp2p::kad::GetProvidersError::Timeout { key, closest_peers } => {
+                        debug!(
+                            query_id = ?id,
+                            key = ?key,
+                            closest_peers_count = closest_peers.len(),
+                            "GetProviders timed out"
+                        );
+
+                        // Complete with whatever providers we found (may be empty)
+                        if let Some(pending) = self.pending_provider_queries.remove(&id) {
+                            let provider_count = pending.providers.len();
+
+                            if provider_count > 0 {
+                                info!(
+                                    %pending.cid,
+                                    provider_count,
+                                    "GetProviders timed out but found some providers"
+                                );
+                                let _ = pending.response_tx.send(Ok(pending.providers));
+                            } else {
+                                warn!(%pending.cid, "GetProviders timed out with no providers");
+                                let _ = pending.response_tx.send(Err(format!(
+                                    "Provider query timed out for {}",
+                                    pending.cid
+                                )));
+                            }
+                        }
+                    }
+                },
+
+                QueryResult::Bootstrap(Ok(bootstrap_ok)) => {
+                    debug!(
+                        query_id = ?id,
+                        peer = %bootstrap_ok.peer,
+                        remaining = bootstrap_ok.num_remaining,
+                        "Bootstrap query progressed"
+                    );
+                }
+
+                QueryResult::Bootstrap(Err(e)) => {
+                    warn!(query_id = ?id, error = ?e, "Bootstrap query failed");
+                }
+
+                other => {
+                    debug!(query_id = ?id, result = ?other, "Kademlia query progressed");
+                }
+            },
+
+            Event::InboundRequest { request } => {
+                debug!(?request, "Received inbound Kademlia request");
             }
 
             event => {
@@ -2202,5 +2909,250 @@ impl NetworkEventLoop {
         }
 
         true
+    }
+
+    /// Convert a ContentId to a Kademlia RecordKey.
+    ///
+    /// Uses the raw CID bytes as the key, ensuring content-addressable
+    /// lookups work correctly across the DHT.
+    fn cid_to_record_key(cid: &ContentId) -> RecordKey {
+        RecordKey::new(&cid.to_bytes())
+    }
+
+    /// Handle get_providers command - initiate DHT provider query
+    fn handle_get_providers(
+        &mut self,
+        cid: ContentId,
+        response: oneshot::Sender<Result<HashSet<PeerId>, String>>,
+    ) {
+        let key = Self::cid_to_record_key(&cid);
+
+        debug!(%cid, key = ?key, "Starting provider discovery query");
+
+        let query_id = self.swarm.behaviour_mut().get_providers(key);
+
+        info!(
+            %cid,
+            ?query_id,
+            "Provider discovery query initiated"
+        );
+
+        self.pending_provider_queries.insert(
+            query_id,
+            PendingProviderQuery {
+                response_tx: response,
+                cid,
+                providers: HashSet::new(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    fn reprovide_all(&mut self) {
+        let cids = self.provider_registry.get_all();
+        let cid_count = cids.len();
+
+        if cid_count == 0 {
+            debug!("No content to reprovide");
+            return;
+        }
+
+        info!(cid_count, "Starting auto-reprovide cycle");
+
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        for cid in cids {
+            let key = Self::cid_to_record_key(&cid);
+
+            match self.swarm.behaviour_mut().start_providing(key) {
+                Ok(query_id) => {
+                    debug!(%cid, ?query_id, "Reprovide initiated");
+                    success_count += 1;
+                }
+                Err(e) => {
+                    warn!(%cid, error = ?e, "Failed to reprovide");
+                    error_count += 1;
+                }
+            }
+        }
+
+        info!(
+            cid_count,
+            success_count, error_count, "Auto-reprovide cycle completed"
+        );
+    }
+
+    /// Clean up stale pending queries.
+    fn cleanup_stale_queries(&mut self) {
+        let timeout = self.provider_config.query_timeout();
+        let now = std::time::Instant::now();
+
+        // Cleanup stale get_providers queries
+        let stale_provider_queries: Vec<QueryId> = self
+            .pending_provider_queries
+            .iter()
+            .filter(|(_, pending)| now.duration_since(pending.created_at) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for query_id in &stale_provider_queries {
+            if let Some(pending) = self.pending_provider_queries.remove(query_id) {
+                let elapsed = now.duration_since(pending.created_at);
+                warn!(
+                    ?query_id,
+                    %pending.cid,
+                    elapsed_secs = elapsed.as_secs(),
+                    "Cleaning up stale get_providers query"
+                );
+                let _ = pending.response_tx.send(Err(format!(
+                    "Provider query timed out for {} after {}s",
+                    pending.cid,
+                    elapsed.as_secs()
+                )));
+            }
+        }
+
+        // Cleanup stale provider announcement queries
+        let stale_announcements: Vec<QueryId> = self
+            .pending_provider_announcements
+            .iter()
+            .filter(|(_, pending)| now.duration_since(pending.created_at) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for query_id in &stale_announcements {
+            if let Some(pending) = self.pending_provider_announcements.remove(query_id) {
+                let elapsed = now.duration_since(pending.created_at);
+                warn!(
+                    ?query_id,
+                    %pending.cid,
+                    elapsed_secs = elapsed.as_secs(),
+                    "Cleaning up stale provider announcement"
+                );
+                if let Some(callback) = pending.callback {
+                    callback(
+                        pending.cid,
+                        Err(format!(
+                            "Provider announcement timed out after {}s",
+                            elapsed.as_secs()
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Cleanup stale content transfer outbound requests, if you track them similarly:
+        let stale_content_requests: Vec<OutboundRequestId> = self
+            .pending_content_requests
+            .iter()
+            .filter(|(_, pending)| now.duration_since(pending.created_at) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for request_id in &stale_content_requests {
+            if let Some(pending) = self.pending_content_requests.remove(request_id) {
+                warn!(
+                    ?request_id,
+                    %pending.cid,
+                    peer = %pending.peer_id,
+                    "Cleaning up stale content request"
+                );
+                let _ = pending
+                    .response_tx
+                    .send(Err(ContentTransferError::RequestFailed {
+                        message: format!("Request timed out after {}s", timeout.as_secs()),
+                    }));
+            }
+        }
+
+        let total_cleaned =
+            stale_provider_queries.len() + stale_announcements.len() + stale_content_requests.len();
+
+        if total_cleaned > 0 {
+            info!(
+                provider_queries = stale_provider_queries.len(),
+                announcements = stale_announcements.len(),
+                content_requests = stale_content_requests.len(),
+                "Cleaned up stale queries"
+            );
+        }
+    }
+
+    /// Handle start_providing command (no callback).
+    fn handle_start_providing(&mut self, cid: &ContentId) -> Result<QueryId, String> {
+        self.handle_start_providing_impl(cid, None)
+    }
+
+    /// Handle start_providing command with optional callback.
+    fn handle_start_providing_impl(
+        &mut self,
+        cid: &ContentId,
+        callback: Option<ProviderConfirmationCallback>,
+    ) -> Result<QueryId, String> {
+        let key = Self::cid_to_record_key(cid);
+        debug!(%cid, key = ?key, "Starting to provide content");
+
+        match self.swarm.behaviour_mut().start_providing(key.clone()) {
+            Ok(query_id) => {
+                info!(%cid, ?query_id, "Provider announcement query started");
+
+                // Add to persistent provider registry
+                if let Err(e) = self.provider_registry.add(cid.clone()) {
+                    error!(%cid, error = %e, "Failed to persist provided CID");
+                    // DHT announcement still proceeds
+                }
+
+                // Track for callback if provided
+                if callback.is_some() {
+                    self.pending_provider_announcements.insert(
+                        query_id,
+                        PendingProviderAnnouncement {
+                            cid: cid.clone(),
+                            callback,
+                            created_at: std::time::Instant::now(),
+                        },
+                    );
+                    debug!(%cid, ?query_id, "Registered callback for provider announcement");
+                }
+
+                debug!(
+                    %cid,
+                    total_provided = self.provider_registry.count(),
+                    "Added to provider registry"
+                );
+
+                Ok(query_id)
+            }
+            Err(e) => {
+                warn!(%cid, error = ?e, "Failed to start providing");
+                Err(format!("Failed to start providing: {:?}", e))
+            }
+        }
+    }
+
+    /// Handle stop_providing command.
+    fn handle_stop_providing(&mut self, cid: &ContentId) -> Result<(), String> {
+        let key = Self::cid_to_record_key(cid);
+        debug!(%cid, key = ?key, "Stopping providing content");
+
+        self.swarm.behaviour_mut().stop_providing(&key);
+
+        // Remove from persistent provider registry
+        match self.provider_registry.remove(cid) {
+            Ok(was_present) => {
+                info!(
+                    %cid,
+                    was_present,
+                    total_provided = self.provider_registry.count(),
+                    "Stopped providing content"
+                );
+            }
+            Err(e) => {
+                error!(%cid, error = %e, "Failed to remove from provider registry");
+            }
+        }
+
+        Ok(())
     }
 }

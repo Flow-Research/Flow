@@ -21,9 +21,7 @@ pub fn create_test_network_config(port: u16, mdns_enabled: bool) -> NetworkConfi
             service_name: "_flow-p2p._udp.local".to_string(),
             query_interval_secs: 5,
         },
-        connection_limits: ConnectionLimits::default(),
-        bootstrap: BootstrapConfig::default(),
-        gossipsub: GossipSubConfig::default(),
+        ..Default::default()
     }
 }
 

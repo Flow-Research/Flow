@@ -6,4 +6,5 @@ pub mod keypair;
 pub mod manager;
 pub mod peer_registry;
 pub mod persistent_peer_registry;
+pub mod persistent_provider_registry;
 pub mod storage;

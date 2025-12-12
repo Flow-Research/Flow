@@ -38,6 +38,7 @@ mod tests {
         let gossip_temp = TempDir::new().expect("Failed to create gossip temp dir");
 
         // Set env vars for this test's unique paths
+        setup_test_env();
         set_envs(&vec![
             ("DHT_DB_PATH", dht_temp.path().to_str().unwrap_or("")),
             (
@@ -54,10 +55,7 @@ mod tests {
             enable_quic: true,
             listen_port: 0, // OS assigns random port
             bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
+            ..Default::default()
         };
 
         (config, dht_temp, peer_reg_temp, gossip_temp)
@@ -268,10 +266,7 @@ mod tests {
             enable_quic: true,
             listen_port: 9876,
             bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
+            ..Default::default()
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -294,10 +289,7 @@ mod tests {
             enable_quic: true,
             listen_port: 0,
             bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
+            ..Default::default()
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
@@ -321,10 +313,7 @@ mod tests {
             enable_quic: false, // Use TCP
             listen_port: 0,
             bootstrap_peers: vec![],
-            mdns: MdnsConfig::default(),
-            connection_limits: ConnectionLimits::default(),
-            bootstrap: BootstrapConfig::default(),
-            gossipsub: GossipSubConfig::default(),
+            ..Default::default()
         };
 
         let manager = NetworkManager::new(&node_data).await.unwrap();

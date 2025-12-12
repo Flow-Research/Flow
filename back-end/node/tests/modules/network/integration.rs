@@ -47,6 +47,7 @@ fn create_integration_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
             heartbeat_interval: Duration::from_millis(300),
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 

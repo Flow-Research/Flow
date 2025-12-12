@@ -4,6 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::{debug, warn};
 
+use crate::modules::storage::content::ContentId;
+
 /// Serialization format for messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SerializationFormat {
@@ -96,6 +98,13 @@ pub enum MessagePayload {
         event_type: String,
         /// Event-specific data
         data: serde_json::Value,
+    },
+
+    ContentPublished {
+        cid: ContentId,
+        name: String,
+        size: u64,
+        content_type: String,
     },
 }
 

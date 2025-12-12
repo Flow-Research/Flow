@@ -66,6 +66,7 @@ fn create_performance_config(port: u16) -> NetworkConfig {
             heartbeat_interval: Duration::from_millis(200),
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 

@@ -1,4 +1,5 @@
-use crate::bootstrap::init::{remove_env, remove_envs, set_env, set_envs, setup_test_env};
+use crate::TestNodeDirs;
+use crate::bootstrap::init::{remove_env, remove_envs, set_env, set_envs};
 use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
 use node::bootstrap::init::NodeData;
@@ -23,41 +24,12 @@ use tempfile::TempDir;
 
 mod messages_proptest;
 
-/// Holds temp directories and manages env vars for a test node
-struct TestNodeDirs {
-    temp_dir: TempDir,
-    name: String,
-}
-
-impl TestNodeDirs {
-    fn new(name: &str) -> Self {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        Self {
-            temp_dir,
-            name: name.to_string(),
-        }
-    }
-
-    /// Set environment variables for this node's paths.
-    /// MUST be called before NetworkManager::new() and start().
-    fn set_env_vars(&self) {
-        setup_test_env(&self.temp_dir, &self.name);
-    }
-
-    fn block_store_path(&self) -> std::path::PathBuf {
-        self.temp_dir.path().join(format!("{}_blocks", self.name))
-    }
-}
-
 fn create_default_config() -> NetworkConfig {
     NetworkConfig {
         enable_quic: true,
         listen_port: 0,
         bootstrap_peers: vec![],
-        mdns: MdnsConfig::default(),
-        connection_limits: ConnectionLimits::default(),
-        bootstrap: BootstrapConfig::default(),
-        gossipsub: GossipSubConfig::default(),
+        ..Default::default()
     }
 }
 
@@ -132,10 +104,7 @@ pub fn create_test_config_with_block_store() -> (
         enable_quic: true,
         listen_port: 0, // OS assigns random port
         bootstrap_peers: vec![],
-        mdns: MdnsConfig::default(),
-        connection_limits: ConnectionLimits::default(),
-        bootstrap: BootstrapConfig::default(),
-        gossipsub: GossipSubConfig::default(),
+        ..Default::default()
     };
 
     let block_store = create_test_block_store(block_store_temp.path());

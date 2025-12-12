@@ -5,10 +5,12 @@ use crate::modules::network::content_transfer::{
 use crate::modules::network::gossipsub::GossipSubConfig;
 use crate::modules::network::storage::RocksDbStore;
 use libp2p::identity::Keypair;
+use libp2p::kad::RecordKey;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{PeerId, gossipsub, kad, mdns};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -97,7 +99,8 @@ impl FlowBehaviour {
 
     /// Create Kademlia DHT behaviour
     fn create_kademlia(local_peer_id: PeerId, store: RocksDbStore) -> kad::Behaviour<RocksDbStore> {
-        let config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
+        let mut config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
+        config.set_kbucket_size(NonZeroUsize::new(1).unwrap());
         kad::Behaviour::with_config(local_peer_id, store, config)
     }
 
@@ -329,6 +332,30 @@ impl FlowBehaviour {
     /// Check if content transfer is enabled
     pub fn is_content_transfer_enabled(&self) -> bool {
         self.content_transfer.is_enabled()
+    }
+
+    /// Start providing content in the DHT.
+    ///
+    /// Announces this node as a provider for the given key.
+    /// Other peers can then use `get_providers` to discover us.
+    pub fn start_providing(&mut self, key: RecordKey) -> Result<kad::QueryId, kad::store::Error> {
+        self.kademlia.start_providing(key)
+    }
+
+    /// Stop providing content.
+    ///
+    /// Removes the local provider record for the given key.
+    /// Note: remote records expire based on their TTL.
+    pub fn stop_providing(&mut self, key: &RecordKey) {
+        self.kademlia.stop_providing(key);
+    }
+
+    /// Get providers for a given key from the DHT.
+    ///
+    /// Queries the DHT for peers that have announced themselves as providers
+    /// for the given content.
+    pub fn get_providers(&mut self, key: RecordKey) -> kad::QueryId {
+        self.kademlia.get_providers(key)
     }
 }
 
