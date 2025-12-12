@@ -1,15 +1,12 @@
 use crate::TestNodeDirs;
-use crate::bootstrap::init::{remove_env, remove_envs, set_env, set_envs};
+use crate::bootstrap::init::{remove_env, remove_envs, set_env, set_envs, setup_test_env};
 use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
 use node::bootstrap::init::NodeData;
-use node::modules::network::config::{
-    BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
-};
+use node::modules::network::config::{MdnsConfig, NetworkConfig};
 use node::modules::network::content_transfer::{
     ContentRequest, ContentResponse, ContentTransferError,
 };
-use node::modules::network::gossipsub::GossipSubConfig;
 use node::modules::network::manager::NetworkManager;
 use node::modules::storage::content::{
     Block, BlockStore, BlockStoreConfig, ChunkingAlgorithm, ContentId, DocumentManifest,
@@ -70,35 +67,11 @@ pub fn create_test_block_store(path: &Path) -> Arc<BlockStore> {
 }
 
 // Helper to create a test config with unique temp directories
-pub fn create_test_config_with_block_store() -> (
-    NetworkConfig,
-    TempDir,
-    TempDir,
-    TempDir,
-    TempDir,
-    Arc<BlockStore>,
-) {
-    let dht_temp = TempDir::new().expect("Failed to create DHT temp dir");
-    let peer_reg_temp = TempDir::new().expect("Failed to create peer registry temp dir");
-    let gossip_temp = TempDir::new().expect("Failed to create gossip temp dir");
-    let block_store_temp = TempDir::new().expect("Failed to create block store temp dir");
+pub fn create_test_config_with_block_store() -> (NetworkConfig, TempDir, Arc<BlockStore>) {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
-    // Set env vars for this test's unique paths
-    set_envs(&vec![
-        ("DHT_DB_PATH", dht_temp.path().to_str().unwrap_or("")),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            peer_reg_temp.path().to_str().unwrap_or(""),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            gossip_temp.path().to_str().unwrap_or(""),
-        ),
-        (
-            "BLOCK_STORE_PATH",
-            block_store_temp.path().to_str().unwrap_or(""),
-        ),
-    ]);
+    // Set all required env vars using centralized helper
+    setup_test_env(&temp_dir, "content_transfer");
 
     let config = NetworkConfig {
         enable_quic: true,
@@ -107,16 +80,10 @@ pub fn create_test_config_with_block_store() -> (
         ..Default::default()
     };
 
-    let block_store = create_test_block_store(block_store_temp.path());
+    let block_store_path = temp_dir.path().join("content_transfer_blocks");
+    let block_store = create_test_block_store(&block_store_path);
 
-    (
-        config,
-        dht_temp,
-        peer_reg_temp,
-        gossip_temp,
-        block_store_temp,
-        block_store,
-    )
+    (config, temp_dir, block_store)
 }
 
 // Helper to create test network manager (after setting env vars)

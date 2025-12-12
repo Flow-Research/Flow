@@ -5,11 +5,7 @@ mod tests {
     use libp2p::Multiaddr;
     use node::{
         bootstrap::init::NodeData,
-        modules::network::{
-            config::{BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig},
-            gossipsub::GossipSubConfig,
-            manager::NetworkManager,
-        },
+        modules::network::{config::NetworkConfig, manager::NetworkManager},
     };
     use rand::rngs::OsRng;
     use serial_test::serial;
@@ -17,7 +13,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::sleep;
 
-    use crate::bootstrap::init::set_envs;
+    use crate::bootstrap::init::setup_test_env;
 
     // Helper function to create test node data
     fn create_test_node_data() -> NodeData {
@@ -32,24 +28,11 @@ mod tests {
     }
 
     // Helper to create a test config with unique temp directories
-    fn create_test_config() -> (NetworkConfig, TempDir, TempDir, TempDir) {
-        let dht_temp = TempDir::new().expect("Failed to create DHT temp dir");
-        let peer_reg_temp = TempDir::new().expect("Failed to create peer registry temp dir");
-        let gossip_temp = TempDir::new().expect("Failed to create gossip temp dir");
+    fn create_test_config() -> (NetworkConfig, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
-        // Set env vars for this test's unique paths
-        setup_test_env();
-        set_envs(&vec![
-            ("DHT_DB_PATH", dht_temp.path().to_str().unwrap_or("")),
-            (
-                "PEER_REGISTRY_DB_PATH",
-                peer_reg_temp.path().to_str().unwrap_or(""),
-            ),
-            (
-                "GOSSIP_MESSAGE_DB_PATH",
-                gossip_temp.path().to_str().unwrap_or(""),
-            ),
-        ]);
+        // Set all required env vars using centralized helper
+        setup_test_env(&temp_dir, "manager_test");
 
         let config = NetworkConfig {
             enable_quic: true,
@@ -58,7 +41,7 @@ mod tests {
             ..Default::default()
         };
 
-        (config, dht_temp, peer_reg_temp, gossip_temp)
+        (config, temp_dir)
     }
 
     #[tokio::test]
@@ -89,10 +72,10 @@ mod tests {
         let node_data = create_test_node_data();
 
         // Each manager needs its own temp directories
-        let (_config1, _dht1, _reg1, _gossip1) = create_test_config();
+        let (_config1, _temp1) = create_test_config();
         let manager1 = NetworkManager::new(&node_data).await.unwrap();
 
-        let (_config2, _dht2, _reg2, _gossip2) = create_test_config();
+        let (_config2, _temp2) = create_test_config();
         let manager2 = NetworkManager::new(&node_data).await.unwrap();
 
         assert_eq!(
@@ -109,10 +92,10 @@ mod tests {
         let node_data2 = create_test_node_data();
 
         // Each manager needs its own temp directories
-        let (_config1, _dht1, _reg1, _gossip1) = create_test_config();
+        let (_config1, _temp1) = create_test_config();
         let manager1 = NetworkManager::new(&node_data1).await.unwrap();
 
-        let (_config2, _dht2, _reg2, _gossip2) = create_test_config();
+        let (_config2, _temp2) = create_test_config();
         let manager2 = NetworkManager::new(&node_data2).await.unwrap();
 
         assert_ne!(
@@ -126,7 +109,7 @@ mod tests {
     #[serial]
     async fn test_network_manager_start_and_stop() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
 
@@ -146,7 +129,7 @@ mod tests {
     #[serial]
     async fn test_cannot_start_twice() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
 
@@ -189,7 +172,7 @@ mod tests {
     #[serial]
     async fn test_peer_count_initially_zero() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -332,7 +315,7 @@ mod tests {
     #[serial]
     async fn test_concurrent_peer_count_queries() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -363,7 +346,7 @@ mod tests {
     #[serial]
     async fn test_shutdown_is_graceful() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -385,7 +368,7 @@ mod tests {
     #[serial]
     async fn test_connected_peers_list() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -402,7 +385,7 @@ mod tests {
     #[serial]
     async fn test_network_stats() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -419,7 +402,7 @@ mod tests {
     #[serial]
     async fn test_dial_invalid_address() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -442,7 +425,7 @@ mod tests {
     #[serial]
     async fn test_peer_info_nonexistent() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();
@@ -464,7 +447,7 @@ mod tests {
     #[serial]
     async fn test_disconnect_peer() {
         let node_data = create_test_node_data();
-        let (config, _dht_temp, _peer_reg_temp, _gossip_temp) = create_test_config();
+        let (config, _temp) = create_test_config();
 
         let manager = NetworkManager::new(&node_data).await.unwrap();
         manager.start(&config).await.unwrap();

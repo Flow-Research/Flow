@@ -219,20 +219,7 @@ async fn test_two_node_pubsub() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // Node 1
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "pubsub_node1");
 
     let node_data1 = create_test_node_data();
     let config1 = create_gossipsub_config(19101);
@@ -244,21 +231,7 @@ async fn test_two_node_pubsub() {
     sleep(Duration::from_millis(500)).await;
 
     // Node 2 - connects to Node 1
-
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "pubsub_node2");
 
     let node_data2 = create_test_node_data();
     let mut config2 = create_gossipsub_config(19102);
@@ -411,20 +384,7 @@ async fn test_two_node_message_delivery() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // Node 1 setup
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "delivery_node1");
 
     let node_data1 = create_test_node_data();
     let config1 = create_gossipsub_config(19201);
@@ -436,20 +396,7 @@ async fn test_two_node_message_delivery() {
     sleep(Duration::from_millis(500)).await;
 
     // Node 2 setup - connects to Node 1
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "delivery_node2");
 
     let node_data2 = create_test_node_data();
     let mut config2 = create_gossipsub_config(19202);
@@ -531,20 +478,7 @@ async fn test_three_node_mesh_propagation() {
     let ports = [19301, 19302, 19303];
 
     // Start Node 1 (hub)
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dirs[0].path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dirs[0].path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dirs[0].path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dirs[0], "mesh_node1");
 
     let node_data1 = create_test_node_data();
     let config1 = create_gossipsub_config(ports[0]);
@@ -555,20 +489,7 @@ async fn test_three_node_mesh_propagation() {
     sleep(Duration::from_millis(500)).await;
 
     // Start Node 2 (connects to Node 1)
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dirs[1].path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dirs[1].path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dirs[1].path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dirs[1], "mesh_node2");
     let node_data2 = create_test_node_data();
     let mut config2 = create_gossipsub_config(ports[1]);
     config2.bootstrap_peers = vec![
@@ -581,20 +502,7 @@ async fn test_three_node_mesh_propagation() {
     let _peer_id2 = *manager2.local_peer_id();
 
     // Start Node 3 (connects to Node 1)
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dirs[2].path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dirs[2].path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dirs[2].path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dirs[2], "mesh_node3");
     let node_data3 = create_test_node_data();
     let mut config3 = create_gossipsub_config(ports[2]);
     config3.bootstrap_peers = vec![
@@ -1233,20 +1141,7 @@ async fn test_end_to_end_message_delivery_verified() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // ==================== NODE 1 SETUP ====================
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "e2e_node1");
 
     let node_data1 = create_test_node_data();
     let config1 = create_gossipsub_config(19401);
@@ -1259,20 +1154,7 @@ async fn test_end_to_end_message_delivery_verified() {
     sleep(Duration::from_millis(500)).await;
 
     // ==================== NODE 2 SETUP (connects to Node 1) ====================
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "e2e_node2");
 
     let node_data2 = create_test_node_data();
     let mut config2 = create_gossipsub_config(19402);
@@ -1422,20 +1304,7 @@ async fn test_message_persistence_without_subscribers() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // Node 1 setup
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "persist_node1");
 
     let node_data1 = create_test_node_data();
     let config1 = create_gossipsub_config(19501);
@@ -1446,20 +1315,7 @@ async fn test_message_persistence_without_subscribers() {
     sleep(Duration::from_millis(500)).await;
 
     // Node 2 setup (connects to Node 1)
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "persist_node2");
 
     let node_data2 = create_test_node_data();
     let mut config2 = create_gossipsub_config(19502);

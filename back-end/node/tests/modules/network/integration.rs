@@ -21,6 +21,7 @@ use crate::bootstrap::init::{
 // ============================================================================
 
 /// Creates a network config with TCP (for reliable local testing)
+/// NOTE: This function must be called AFTER setup_test_env() to pick up correct PROVIDER_REGISTRY_DB_PATH
 fn create_integration_config(port: u16, mdns_enabled: bool) -> NetworkConfig {
     NetworkConfig {
         enable_quic: false, // Use TCP for deterministic local testing
@@ -92,14 +93,41 @@ impl TestNode {
         self.manager.local_peer_id()
     }
 
-    async fn start(&self, config: &NetworkConfig) {
+    async fn start_with_mdns(&self, port: u16, mdns_enabled: bool) {
         // IMPORTANT: Re-set env vars before start() because they may have been
         // overwritten by other TestNode::new() calls
         setup_test_env(&self.temp_dir, &self.name);
 
         set_env("CONTENT_TRANSFER_ENABLED", "false");
 
-        self.manager.start(config).await.expect("Failed to start");
+        // Create config AFTER setting env vars so ProviderConfig::from_env() picks up correct path
+        let config = create_integration_config(port, mdns_enabled);
+        self.manager.start(&config).await.expect("Failed to start");
+    }
+
+    async fn start_with_bootstrap(&self, port: u16, bootstrap_addr: Multiaddr) {
+        // IMPORTANT: Re-set env vars before start() because they may have been
+        // overwritten by other TestNode::new() calls
+        setup_test_env(&self.temp_dir, &self.name);
+
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
+
+        // Create config AFTER setting env vars so ProviderConfig::from_env() picks up correct path
+        let config = create_config_with_bootstrap(port, bootstrap_addr);
+        self.manager.start(&config).await.expect("Failed to start");
+    }
+
+    async fn start_as_bootstrap_hub(&self, port: u16) {
+        // IMPORTANT: Re-set env vars before start() because they may have been
+        // overwritten by other TestNode::new() calls
+        setup_test_env(&self.temp_dir, &self.name);
+
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
+
+        // Create config AFTER setting env vars so ProviderConfig::from_env() picks up correct path
+        let mut config = create_integration_config(port, false);
+        config.bootstrap_peers = vec![];
+        self.manager.start(&config).await.expect("Failed to start");
     }
 
     async fn stop(&self) {
@@ -215,18 +243,14 @@ async fn test_three_node_discovery_via_mdns() {
     let node2 = TestNode::new("mdns_3node_2").await;
     let node3 = TestNode::new("mdns_3node_3").await;
 
-    let config1 = create_integration_config(0, true);
-    let config2 = create_integration_config(0, true);
-    let config3 = create_integration_config(0, true);
-
-    // Start all nodes
-    node1.start(&config1).await;
+    // Start all nodes - using start_with_mdns to ensure correct env vars are set before config creation
+    node1.start_with_mdns(0, true).await;
     info!(peer_id = %node1.peer_id(), "Node 1 started");
 
-    node2.start(&config2).await;
+    node2.start_with_mdns(0, true).await;
     info!(peer_id = %node2.peer_id(), "Node 2 started");
 
-    node3.start(&config3).await;
+    node3.start_with_mdns(0, true).await;
     info!(peer_id = %node3.peer_id(), "Node 3 started");
 
     // Wait for full mesh (each node should see 2 peers)
@@ -275,10 +299,7 @@ async fn test_three_node_discovery_via_bootstrap() {
 
     // Create bootstrap node (Node 1 - the hub)
     let node1 = TestNode::new("bootstrap_3node_1").await;
-    let mut config1 = create_integration_config(19001, false);
-    config1.bootstrap_peers = vec![];
-
-    node1.start(&config1).await;
+    node1.start_as_bootstrap_hub(19001).await;
     info!(peer_id = %node1.peer_id(), "Bootstrap node (hub) started");
 
     sleep(Duration::from_millis(500)).await;
@@ -289,16 +310,14 @@ async fn test_three_node_discovery_via_bootstrap() {
 
     // Create Node 2 connecting to Node 1 (spoke)
     let node2 = TestNode::new("bootstrap_3node_2").await;
-    let config2 = create_config_with_bootstrap(19002, bootstrap_addr.clone());
-
-    node2.start(&config2).await;
+    node2
+        .start_with_bootstrap(19002, bootstrap_addr.clone())
+        .await;
     info!(peer_id = %node2.peer_id(), "Node 2 (spoke) started");
 
     // Create Node 3 connecting to Node 1 (spoke)
     let node3 = TestNode::new("bootstrap_3node_3").await;
-    let config3 = create_config_with_bootstrap(19003, bootstrap_addr);
-
-    node3.start(&config3).await;
+    node3.start_with_bootstrap(19003, bootstrap_addr).await;
     info!(peer_id = %node3.peer_id(), "Node 3 (spoke) started");
 
     // Wait for star topology: hub has 2 peers, spokes have at least 1
@@ -356,13 +375,10 @@ async fn test_three_node_message_propagation() {
     let node2 = TestNode::new("gossip_3node_2").await;
     let node3 = TestNode::new("gossip_3node_3").await;
 
-    let config1 = create_integration_config(0, true);
-    let config2 = create_integration_config(0, true);
-    let config3 = create_integration_config(0, true);
-
-    node1.start(&config1).await;
-    node2.start(&config2).await;
-    node3.start(&config3).await;
+    // Start all nodes - using start_with_mdns to ensure correct env vars are set before config creation
+    node1.start_with_mdns(0, true).await;
+    node2.start_with_mdns(0, true).await;
+    node3.start_with_mdns(0, true).await;
 
     // Wait for mesh to form
     let discovered =
@@ -437,16 +453,14 @@ async fn test_node_join_existing_mesh() {
 
     // Start 2 nodes first with a small delay between to prevent race conditions
     let node1 = TestNode::new("join_mesh_1").await;
-    let config1 = create_integration_config(0, true);
-    node1.start(&config1).await;
+    node1.start_with_mdns(0, true).await;
     info!(peer_id = %node1.peer_id(), "Node 1 started");
 
     // Small delay to let node 1 start advertising via mDNS
     sleep(Duration::from_millis(500)).await;
 
     let node2 = TestNode::new("join_mesh_2").await;
-    let config2 = create_integration_config(0, true);
-    node2.start(&config2).await;
+    node2.start_with_mdns(0, true).await;
     info!(peer_id = %node2.peer_id(), "Node 2 started");
 
     // Wait for initial mesh (increase timeout for reliability)
@@ -457,9 +471,7 @@ async fn test_node_join_existing_mesh() {
 
     // Now join a third node
     let node3 = TestNode::new("join_mesh_3").await;
-    let config3 = create_integration_config(0, true);
-
-    node3.start(&config3).await;
+    node3.start_with_mdns(0, true).await;
     info!(peer_id = %node3.peer_id(), "Node 3 joining existing mesh");
 
     // Wait for full mesh
@@ -486,23 +498,20 @@ async fn test_node_departure_mesh_remains() {
 
     // Start nodes with staggered delays to prevent race conditions
     let node1 = TestNode::new("depart_mesh_1").await;
-    let config1 = create_integration_config(0, true);
-    node1.start(&config1).await;
+    node1.start_with_mdns(0, true).await;
     info!(peer_id = %node1.peer_id(), "Node 1 started");
 
     // Small delay to let node 1 start advertising via mDNS
     sleep(Duration::from_millis(300)).await;
 
     let node2 = TestNode::new("depart_mesh_2").await;
-    let config2 = create_integration_config(0, true);
-    node2.start(&config2).await;
+    node2.start_with_mdns(0, true).await;
     info!(peer_id = %node2.peer_id(), "Node 2 started");
 
     sleep(Duration::from_millis(300)).await;
 
     let node3 = TestNode::new("depart_mesh_3").await;
-    let config3 = create_integration_config(0, true);
-    node3.start(&config3).await;
+    node3.start_with_mdns(0, true).await;
     info!(peer_id = %node3.peer_id(), "Node 3 started");
 
     // Wait for full mesh (increase timeout for reliability)
@@ -556,8 +565,7 @@ async fn test_five_node_mesh_scalability() {
     // Create and start 5 nodes
     for i in 0..5 {
         let node = TestNode::new(&format!("scale_5node_{}", i)).await;
-        let config = create_integration_config(0, true);
-        node.start(&config).await;
+        node.start_with_mdns(0, true).await;
         info!(peer_id = %node.peer_id(), node = i, "Node started");
         nodes.push(node);
         sleep(Duration::from_millis(300)).await;

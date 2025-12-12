@@ -42,9 +42,14 @@ async fn test_tcp_transport_connection() {
     setup_test_env(&temp_dir2, "nat_tcp_2");
     let node_data2 = create_test_node_data();
     let config2 = NetworkConfig {
-        enable_quic: false,
+        enable_quic: false, // TCP only
         listen_port: 0,
-        ..config1.clone()
+        bootstrap_peers: vec![],
+        mdns: MdnsConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
     };
 
     let manager2 = NetworkManager::new(&node_data2).await.unwrap();
@@ -98,9 +103,14 @@ async fn test_quic_transport_connection() {
     setup_test_env(&temp_dir2, "nat_quic_2");
     let node_data2 = create_test_node_data();
     let config2 = NetworkConfig {
-        enable_quic: true,
+        enable_quic: true, // QUIC enabled
         listen_port: 0,
-        ..config1.clone()
+        bootstrap_peers: vec![],
+        mdns: MdnsConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default() // Must use Default, not clone, to pick up new env var
     };
 
     let manager2 = NetworkManager::new(&node_data2).await.unwrap();

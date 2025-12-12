@@ -12,7 +12,8 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::info;
 
-use crate::bootstrap::init::{create_test_node_data, remove_env, set_env, set_envs};
+use crate::TestNodeDirs;
+use crate::bootstrap::init::{create_test_node_data, remove_env, set_env};
 
 // =============================================================================
 // Unit Tests: ProviderConfig
@@ -170,49 +171,6 @@ fn test_registry_record_announcement() {
 // =============================================================================
 // Helper Functions for Integration Tests
 // =============================================================================
-
-struct TestNodeDirs {
-    data_dir: TempDir,
-    registry_dir: TempDir,
-    message_store_dir: TempDir,
-    block_store_dir: TempDir,
-    provider_registry_dir: TempDir,
-    prefix: String,
-}
-
-impl TestNodeDirs {
-    fn new(prefix: &str) -> Self {
-        Self {
-            data_dir: TempDir::new().expect("Failed to create data_dir"),
-            registry_dir: TempDir::new().expect("Failed to create registry_dir"),
-            message_store_dir: TempDir::new().expect("Failed to create message_store_dir"),
-            block_store_dir: TempDir::new().expect("Failed to create block_store_dir"),
-            provider_registry_dir: TempDir::new().expect("Failed to create provider_registry_dir"),
-            prefix: prefix.to_string(),
-        }
-    }
-
-    fn set_env_vars(&self) {
-        set_envs(&vec![
-            (
-                "PEER_REGISTRY_PATH",
-                self.registry_dir.path().to_str().unwrap(),
-            ),
-            (
-                "MESSAGE_STORE_PATH",
-                self.message_store_dir.path().to_str().unwrap(),
-            ),
-            (
-                "BLOCK_STORE_PATH",
-                self.block_store_dir.path().to_str().unwrap(),
-            ),
-            (
-                "PROVIDER_REGISTRY_DB_PATH",
-                self.provider_registry_dir.path().to_str().unwrap(),
-            ),
-        ]);
-    }
-}
 
 fn create_test_config(port: u16) -> node::modules::network::config::NetworkConfig {
     use node::modules::network::config::{MdnsConfig, NetworkConfig};

@@ -96,12 +96,15 @@ impl PerfTestNode {
     }
 
     /// Re-set env vars and start the manager
-    async fn start(&self, config: &NetworkConfig) -> Result<(), AppError> {
+    /// NOTE: Creates config internally AFTER setting env vars to ensure correct PROVIDER_REGISTRY_DB_PATH
+    async fn start(&self, port: u16) -> Result<(), AppError> {
         // IMPORTANT: Re-set env vars before start() because they may have been
         // overwritten by other PerfTestNode::new() calls
         setup_test_env(&self.temp_dir, &self.name);
         set_env("CONTENT_TRANSFER_ENABLED", "false");
-        self.manager.start(config).await
+        // Create config AFTER setting env vars so ProviderConfig::from_env() picks up correct path
+        let config = create_performance_config(port);
+        self.manager.start(&config).await
     }
 
     async fn stop(&self) -> Result<(), AppError> {
@@ -124,17 +127,15 @@ async fn test_connection_establishment_latency() {
 
     // Start first node
     let node1 = PerfTestNode::new("perf_conn_1").await;
-    let config1 = create_performance_config(0);
-    node1.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     sleep(Duration::from_secs(1)).await;
 
     // Start second node and measure connection time
     let node2 = PerfTestNode::new("perf_conn_2").await;
-    let config2 = create_performance_config(0);
 
     let start = Instant::now();
-    node2.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Poll for connection
     let mut connected = false;
@@ -188,13 +189,11 @@ async fn test_message_delivery_latency() {
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
-    let config1 = create_performance_config(0);
-    node1.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
-    let config2 = create_performance_config(0);
-    node2.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -290,13 +289,11 @@ async fn test_message_throughput() {
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
-    let config1 = create_performance_config(0);
-    node1.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
-    let config2 = create_performance_config(0);
-    node2.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -401,13 +398,11 @@ async fn test_reconnection_time() {
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_reconn_1").await;
-    let config1 = create_performance_config(0);
-    node1.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_reconn_2").await;
-    let config2 = create_performance_config(0);
-    node2.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for initial connection
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -441,8 +436,7 @@ async fn test_reconnection_time() {
     let start = Instant::now();
 
     let node2_new = PerfTestNode::new("perf_reconn_2b").await; // Different name for fresh temp dir
-    let config2_new = create_performance_config(0);
-    node2_new.start(&config2_new).await.unwrap();
+    node2_new.start(0).await.unwrap();
 
     let reconnected = tokio::time::timeout(Duration::from_secs(30), async {
         loop {

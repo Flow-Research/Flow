@@ -31,7 +31,7 @@ pub struct TestNodeDirs {
 }
 
 impl TestNodeDirs {
-    fn new(name: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         Self {
             temp_dir,
@@ -40,11 +40,11 @@ impl TestNodeDirs {
     }
 
     /// Set environment variables for this node's paths.
-    fn set_env_vars(&self) {
+    pub fn set_env_vars(&self) {
         setup_test_env(&self.temp_dir, &self.name);
     }
 
-    fn block_store_path(&self) -> std::path::PathBuf {
+    pub fn block_store_path(&self) -> std::path::PathBuf {
         self.temp_dir.path().join(format!("{}_blocks", self.name))
     }
 }

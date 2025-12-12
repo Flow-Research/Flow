@@ -296,7 +296,7 @@ impl Default for NetworkConfig {
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
             gossipsub: GossipSubConfig::default(),
-            provider: ProviderConfig::default(),
+            provider: ProviderConfig::from_env(),
         }
     }
 }
