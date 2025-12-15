@@ -105,6 +105,15 @@ pub struct BlockStore {
     config: BlockStoreConfig,
 }
 
+impl std::fmt::Debug for BlockStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockStore")
+            .field("config", &self.config)
+            .field("db", &"<RocksDB>")
+            .finish()
+    }
+}
+
 impl BlockStore {
     /// Create or open a block store at the configured path.
     #[instrument(skip(config), fields(path = %config.db_path.display()))]

@@ -5,6 +5,7 @@ mod cid;
 mod dag;
 mod error;
 mod manifest;
+mod provider;
 
 pub use block::Block;
 pub use block_store::{BlockStore, BlockStoreConfig, BlockStoreStats};
@@ -22,3 +23,5 @@ pub use manifest::{
     DEFAULT_TREE_FANOUT, DocumentManifest, DocumentManifestBuilder, FLAT_CHUNK_THRESHOLD,
     MANIFEST_VERSION, ManifestStructure, TreeBuilder, TreeConfig, TreeNode, TreeReader,
 };
+
+pub use provider::{ContentProvider, ContentProviderError, LocalProvider};
