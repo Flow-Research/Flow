@@ -107,7 +107,7 @@ impl PerfTestNode {
         self.manager.start(&config).await
     }
 
-    async fn stop(&self) -> Result<(), AppError> {
+    async fn _stop(&self) -> Result<(), AppError> {
         self.manager.stop().await
     }
 }

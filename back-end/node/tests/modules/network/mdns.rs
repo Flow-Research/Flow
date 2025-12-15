@@ -1,7 +1,4 @@
-use node::modules::network::config::{
-    BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
-};
-use node::modules::network::gossipsub::GossipSubConfig;
+use node::modules::network::config::{MdnsConfig, NetworkConfig};
 use node::modules::network::manager::NetworkManager;
 use serial_test::serial;
 use std::time::Duration;

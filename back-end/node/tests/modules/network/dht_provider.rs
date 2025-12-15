@@ -1,4 +1,3 @@
-use libp2p::kad::{self, K_VALUE};
 use node::modules::{
     network::{
         config::{MdnsConfig, NetworkConfig},
