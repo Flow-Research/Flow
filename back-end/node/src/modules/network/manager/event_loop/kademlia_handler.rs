@@ -184,9 +184,23 @@ impl NetworkEventLoop {
                 }
             },
 
-            Event::InboundRequest { request } => {
-                debug!(?request, "Received inbound Kademlia request");
-            }
+            Event::InboundRequest { request } => match request {
+                libp2p::kad::InboundRequest::AddProvider { record } => {
+                    if let Some(r) = record {
+                        info!(
+                            provider = ?r.provider,
+                            key = ?r.key,
+                            "Received ADD_PROVIDER request - storing provider record"
+                        );
+                    }
+                }
+                libp2p::kad::InboundRequest::GetProvider { .. } => {
+                    info!("Received GET_PROVIDER request");
+                }
+                _ => {
+                    debug!(?request, "Received inbound Kademlia request");
+                }
+            },
 
             event => {
                 debug!("Kademlia event: {:?}", event);

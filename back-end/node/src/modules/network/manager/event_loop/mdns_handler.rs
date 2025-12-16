@@ -22,6 +22,11 @@ impl NetworkEventLoop {
                     self.peer_discovery_source
                         .insert(peer_id, DiscoverySource::Mdns);
 
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, multiaddr.clone());
+
                     // Check if we should dial this peer
                     if self.should_dial_peer(&peer_id) {
                         info!("Auto-dialing mDNS-discovered peer: {}", peer_id);

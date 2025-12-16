@@ -10,7 +10,6 @@ use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{PeerId, gossipsub, kad, mdns};
-use std::num::NonZeroUsize;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -99,9 +98,11 @@ impl FlowBehaviour {
 
     /// Create Kademlia DHT behaviour
     fn create_kademlia(local_peer_id: PeerId, store: RocksDbStore) -> kad::Behaviour<RocksDbStore> {
-        let mut config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
-        config.set_kbucket_size(NonZeroUsize::new(1).unwrap());
-        kad::Behaviour::with_config(local_peer_id, store, config)
+        let config = kad::Config::new(libp2p::StreamProtocol::new("/flow/kad/1.0.0"));
+        let mut behaviour = kad::Behaviour::with_config(local_peer_id, store, config);
+        behaviour.set_mode(Some(kad::Mode::Server));
+
+        behaviour
     }
 
     /// Create mDNS behaviour if enabled

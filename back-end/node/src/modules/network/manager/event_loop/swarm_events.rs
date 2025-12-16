@@ -99,6 +99,17 @@ impl NetworkEventLoop {
                     established_in
                 );
 
+                // Add peer to Kademlia routing table for DHT operations
+                self.swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, endpoint.get_remote_address().clone());
+
+                debug!(
+                    "Added connected peer to Kademlia routing table: {}",
+                    peer_id
+                );
+
                 // Remove from dialing set if we were dialing
                 self.dialing_peers.remove(&peer_id);
                 self.peer_registry.on_connection_established(
@@ -164,6 +175,14 @@ impl NetworkEventLoop {
                 debug!(
                     "Dialing peer {:?} (connection: {:?})",
                     peer_id, connection_id
+                );
+            }
+
+            SwarmEvent::ListenerError { listener_id, error } => {
+                debug!(
+                    "Listener error listener_id {:?} (error: {:?})",
+                    listener_id,
+                    error.to_string()
                 );
             }
 

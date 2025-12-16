@@ -24,4 +24,6 @@ pub use manifest::{
     MANIFEST_VERSION, ManifestStructure, TreeBuilder, TreeConfig, TreeNode, TreeReader,
 };
 
-pub use provider::{ContentProvider, ContentProviderError, LocalProvider};
+pub use provider::{
+    ContentProvider, ContentProviderError, LocalProvider, NetworkProvider, NetworkProviderConfig,
+};

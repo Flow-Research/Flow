@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// High-level network manager providing thread-safe access to P2P networking
 #[derive(Debug)]
@@ -68,6 +68,9 @@ pub struct NetworkManager {
 
     /// Subscription manager (shared with router)
     pub subscription_manager: Arc<TopicSubscriptionManager>,
+
+    /// Optional injected block store
+    block_store: Option<Arc<BlockStore>>,
 }
 
 impl NetworkManager {
@@ -85,6 +88,18 @@ impl NetworkManager {
     /// # Errors
     /// Returns `AppError::Crypto` if key conversion fails
     pub async fn new(node_data: &NodeData) -> Result<Self, AppError> {
+        Self::with(node_data, None).await
+    }
+
+    /// Create a new NetworkManager with an injected BlockStore
+    ///
+    /// Use this when you need to share the BlockStore with other components
+    /// (e.g., NetworkProvider). If block_store is None and content transfer
+    /// is enabled, one will be created internally during start().
+    pub async fn with(
+        node_data: &NodeData,
+        block_store: Option<Arc<BlockStore>>,
+    ) -> Result<Self, AppError> {
         info!("Initializing NetworkManager");
 
         let keypair = keypair::ed25519_to_libp2p_keypair(&node_data.private_key)?;
@@ -93,13 +108,11 @@ impl NetworkManager {
         info!(peer_id = %local_peer_id, "Network PeerId initialized");
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-
         let (message_router, subscription_manager) = Self::create_message_routing()?;
 
-        info!(
-            peer_id = %local_peer_id,
-            "NetworkManager initialized with message routing"
-        );
+        if block_store.is_some() {
+            info!("NetworkManager initialized with injected BlockStore");
+        }
 
         Ok(Self {
             local_peer_id,
@@ -109,7 +122,30 @@ impl NetworkManager {
             event_loop_handle: Arc::new(Mutex::new(None)),
             message_router,
             subscription_manager,
+            block_store,
         })
+    }
+
+    pub fn block_store(&self) -> Option<Arc<BlockStore>> {
+        self.block_store.clone()
+    }
+
+    /// Resolve which BlockStore to use:
+    /// 1. If injected at construction, use that
+    /// 2. If content transfer enabled, create one
+    /// 3. Otherwise, None
+    fn resolve_block_store(
+        &self,
+        content_transfer_config: &ContentTransferConfig,
+    ) -> Option<Arc<BlockStore>> {
+        // Injected BlockStore takes precedence
+        if let Some(store) = &self.block_store {
+            info!("Using injected BlockStore for content transfer");
+            return Some(Arc::clone(store));
+        }
+
+        // Fallback: create internally if enabled
+        self.create_block_store(content_transfer_config)
     }
 
     /// Create message store and routing components
@@ -231,7 +267,7 @@ impl NetworkManager {
 
         let content_transfer_config = ContentTransferConfig::from_env();
 
-        let block_store = self.create_block_store(&content_transfer_config);
+        let block_store = self.resolve_block_store(&content_transfer_config);
         let listen_addr = Self::resolve_listen_address(config)?;
         let swarm = self.build_configured_swarm(config).await?;
         let command_rx = self.take_command_receiver().await?;
@@ -418,7 +454,10 @@ impl NetworkManager {
         event_loop
             .swarm
             .listen_on(listen_addr.clone())
-            .map_err(|e| AppError::Network(format!("Failed to listen: {}", e)))?;
+            .map_err(|e| {
+                error!(error = ?e, "Listen failed");
+                AppError::Network(format!("Failed to listen: {:?}", e))
+            })?;
 
         info!("Listening on: {}", listen_addr);
 
