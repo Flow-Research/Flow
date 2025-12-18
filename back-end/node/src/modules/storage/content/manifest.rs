@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
+use crate::modules::storage::content::{ContentProvider, ContentProviderError};
+
 use super::block::Block;
 use super::block_store::BlockStore;
 use super::chunking::ChunkingAlgorithm;
@@ -434,28 +436,31 @@ impl TreeBuilder {
 // ============================================================================
 
 /// Reader for traversing tree structure to get all chunk CIDs.
-pub struct TreeReader<'a> {
-    block_store: &'a BlockStore,
+///
+/// Generic over `ContentProvider` to support both local and network retrieval.
+pub struct TreeReader<'a, P: ContentProvider> {
+    provider: &'a P,
 }
 
-impl<'a> TreeReader<'a> {
-    /// Create a new tree reader.
-    pub fn new(block_store: &'a BlockStore) -> Self {
-        Self { block_store }
+impl<'a, P: ContentProvider> TreeReader<'a, P> {
+    /// Create a new tree reader with a content provider.
+    pub fn with_provider(provider: &'a P) -> Self {
+        Self { provider }
     }
 
     /// Get all chunk CIDs from a manifest, traversing tree if needed.
-    pub fn get_all_chunks(
+    pub async fn get_all_chunks(
         &self,
         manifest: &DocumentManifest,
-    ) -> Result<Vec<ContentId>, BlockStoreError> {
+    ) -> Result<Vec<ContentId>, ContentProviderError> {
         match &manifest.structure {
             ManifestStructure::Flat => Ok(manifest.children.clone()),
             ManifestStructure::Tree { chunk_count, .. } => {
                 debug!(chunk_count, "Traversing tree structure");
 
                 let mut chunks = Vec::with_capacity(*chunk_count as usize);
-                self.collect_chunks(&manifest.children, &mut chunks)?;
+                self.collect_chunks_async(&manifest.children, &mut chunks)
+                    .await?;
 
                 if chunks.len() != *chunk_count as usize {
                     warn!(
@@ -470,115 +475,31 @@ impl<'a> TreeReader<'a> {
         }
     }
 
-    /// Recursively collect chunks from tree nodes.
-    fn collect_chunks(
+    /// Recursively collect chunks from tree nodes (async).
+    async fn collect_chunks_async(
         &self,
         node_cids: &[ContentId],
         chunks: &mut Vec<ContentId>,
-    ) -> Result<(), BlockStoreError> {
+    ) -> Result<(), ContentProviderError> {
         for cid in node_cids {
             let block = self
-                .block_store
-                .get(cid)?
-                .ok_or_else(|| BlockStoreError::NotFound(cid.clone()))?;
+                .provider
+                .get_block(cid)
+                .await?
+                .ok_or_else(|| ContentProviderError::NotFound(cid.clone()))?;
 
-            let node = TreeNode::from_dag_cbor(block.data())?;
+            let node = TreeNode::from_dag_cbor(block.data())
+                .map_err(|e| ContentProviderError::Internal(e.to_string()))?;
 
             if node.is_leaf_level {
                 chunks.extend(node.children.iter().cloned());
             } else {
-                self.collect_chunks(&node.children, chunks)?;
+                // Use Box::pin for recursive async call
+                Box::pin(self.collect_chunks_async(&node.children, chunks)).await?;
             }
         }
 
         Ok(())
-    }
-
-    /// Create an iterator over chunks (lazy traversal).
-    pub fn iter_chunks(
-        &'a self,
-        manifest: &'a DocumentManifest,
-    ) -> Box<dyn Iterator<Item = Result<ContentId, BlockStoreError>> + 'a> {
-        match &manifest.structure {
-            ManifestStructure::Flat => Box::new(manifest.children.iter().cloned().map(Ok)),
-            ManifestStructure::Tree { .. } => Box::new(TreeChunkIterator::new(self, manifest)),
-        }
-    }
-}
-
-// ============================================================================
-// TreeChunkIterator
-// ============================================================================
-
-/// Lazy iterator over chunks in a tree-structured manifest.
-pub struct TreeChunkIterator<'a> {
-    reader: &'a TreeReader<'a>,
-    /// Stack of (node_cids, current_index)
-    stack: Vec<(Vec<ContentId>, usize)>,
-    /// Current leaf node's chunks being yielded
-    current_chunks: Vec<ContentId>,
-    current_chunk_index: usize,
-}
-
-impl<'a> TreeChunkIterator<'a> {
-    fn new(reader: &'a TreeReader<'a>, manifest: &'a DocumentManifest) -> Self {
-        Self {
-            reader,
-            stack: vec![(manifest.children.clone(), 0)],
-            current_chunks: Vec::new(),
-            current_chunk_index: 0,
-        }
-    }
-}
-
-impl<'a> Iterator for TreeChunkIterator<'a> {
-    type Item = Result<ContentId, BlockStoreError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // First, yield from current chunks buffer
-        if self.current_chunk_index < self.current_chunks.len() {
-            let chunk = self.current_chunks[self.current_chunk_index].clone();
-            self.current_chunk_index += 1;
-            return Some(Ok(chunk));
-        }
-
-        // Need to load more nodes
-        while let Some((node_cids, index)) = self.stack.last_mut() {
-            if *index >= node_cids.len() {
-                self.stack.pop();
-                continue;
-            }
-
-            let cid = node_cids[*index].clone();
-            *index += 1;
-
-            // Fetch and parse node
-            let block = match self.reader.block_store.get(&cid) {
-                Ok(Some(b)) => b,
-                Ok(None) => return Some(Err(BlockStoreError::NotFound(cid))),
-                Err(e) => return Some(Err(e)),
-            };
-
-            let node = match TreeNode::from_dag_cbor(block.data()) {
-                Ok(n) => n,
-                Err(e) => return Some(Err(e)),
-            };
-
-            if node.is_leaf_level {
-                self.current_chunks = node.children;
-                self.current_chunk_index = 0;
-
-                if !self.current_chunks.is_empty() {
-                    let chunk = self.current_chunks[0].clone();
-                    self.current_chunk_index = 1;
-                    return Some(Ok(chunk));
-                }
-            } else {
-                self.stack.push((node.children, 0));
-            }
-        }
-
-        None
     }
 }
 
@@ -819,7 +740,8 @@ const TEST_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::storage::content::BlockStoreConfig;
+    use crate::modules::storage::content::{BlockStoreConfig, LocalProvider};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn sample_chunks() -> Vec<ContentId> {
@@ -836,14 +758,14 @@ mod tests {
             .collect()
     }
 
-    fn create_test_store() -> (BlockStore, TempDir) {
+    fn create_test_store() -> (Arc<BlockStore>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let config = BlockStoreConfig {
             db_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
         let store = BlockStore::new(config).unwrap();
-        (store, temp_dir)
+        (Arc::new(store), temp_dir)
     }
 
     // ========================================
@@ -1048,8 +970,8 @@ mod tests {
         assert!(manifest.tree_depth() >= 1);
     }
 
-    #[test]
-    fn test_tree_reader_get_all_chunks() {
+    #[tokio::test]
+    async fn test_tree_reader_get_all_chunks() {
         let (store, _temp) = create_test_store();
         let chunks = generate_chunks(100);
 
@@ -1064,15 +986,16 @@ mod tests {
             .build_with_store(&store)
             .expect("should build");
 
-        let reader = TreeReader::new(&store);
-        let result = reader.get_all_chunks(&manifest).unwrap();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let result = reader.get_all_chunks(&manifest).await.unwrap();
 
         assert_eq!(result.len(), chunks.len());
         assert_eq!(result, chunks);
     }
 
-    #[test]
-    fn test_tree_chunk_iterator() {
+    #[tokio::test]
+    async fn test_tree_chunk_collect() {
         let (store, _temp) = create_test_store();
         let chunks = generate_chunks(50);
 
@@ -1087,10 +1010,11 @@ mod tests {
             .build_with_store(&store)
             .expect("should build");
 
-        let reader = TreeReader::new(&store);
-        let iterated: Vec<ContentId> = reader.iter_chunks(&manifest).map(|r| r.unwrap()).collect();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let collected = reader.get_all_chunks(&manifest).await.unwrap();
 
-        assert_eq!(iterated, chunks);
+        assert_eq!(collected, chunks);
     }
 
     // ========================================
@@ -1126,8 +1050,8 @@ mod tests {
         assert_eq!(restored.name, Some("文档.pdf".into()));
     }
 
-    #[test]
-    fn test_full_roundtrip_with_tree() {
+    #[tokio::test]
+    async fn test_full_roundtrip_with_tree() {
         let (store, _temp) = create_test_store();
         let original_chunks = generate_chunks(200);
 
@@ -1157,8 +1081,9 @@ mod tests {
         assert_eq!(restored.chunk_count(), 200);
 
         // Traverse tree to get all chunks
-        let reader = TreeReader::new(&store);
-        let read_chunks = reader.get_all_chunks(&restored).unwrap();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let read_chunks = reader.get_all_chunks(&restored).await.unwrap();
 
         assert_eq!(read_chunks, original_chunks);
     }
@@ -1166,19 +1091,20 @@ mod tests {
 
 #[cfg(test)]
 mod tree_tests {
-    use crate::modules::storage::content::BlockStoreConfig;
+    use crate::modules::storage::content::{BlockStoreConfig, LocalProvider};
 
     use super::*;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn create_test_store() -> (BlockStore, TempDir) {
+    fn create_test_store() -> (Arc<BlockStore>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let config = BlockStoreConfig {
             db_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
         let store = BlockStore::new(config).unwrap();
-        (store, temp_dir)
+        (Arc::new(store), temp_dir)
     }
 
     fn generate_chunks(count: usize) -> Vec<ContentId> {
@@ -1283,8 +1209,8 @@ mod tree_tests {
     // TreeReader Tests
     // ========================================
 
-    #[test]
-    fn test_tree_reader_flat_manifest() {
+    #[tokio::test]
+    async fn test_tree_reader_flat_manifest() {
         let (store, _temp) = create_test_store();
         let chunks = generate_chunks(10);
 
@@ -1295,14 +1221,15 @@ mod tree_tests {
             .build_flat()
             .unwrap();
 
-        let reader = TreeReader::new(&store);
-        let result = reader.get_all_chunks(&manifest).unwrap();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let result = reader.get_all_chunks(&manifest).await.unwrap();
 
         assert_eq!(result, chunks);
     }
 
-    #[test]
-    fn test_tree_reader_tree_manifest() {
+    #[tokio::test]
+    async fn test_tree_reader_tree_manifest() {
         let (store, _temp) = create_test_store();
 
         // Use low threshold to force tree structure
@@ -1321,15 +1248,16 @@ mod tree_tests {
 
         assert!(manifest.is_tree());
 
-        let reader = TreeReader::new(&store);
-        let result = reader.get_all_chunks(&manifest).unwrap();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let result = reader.get_all_chunks(&manifest).await.unwrap();
 
         assert_eq!(result.len(), chunks.len());
         assert_eq!(result, chunks);
     }
 
-    #[test]
-    fn test_tree_chunk_iterator() {
+    #[tokio::test]
+    async fn test_tree_chunk_collect() {
         let (store, _temp) = create_test_store();
         let chunks = generate_chunks(50);
 
@@ -1344,18 +1272,19 @@ mod tree_tests {
             .build_with_store(&store)
             .unwrap();
 
-        let reader = TreeReader::new(&store);
-        let iterated: Vec<ContentId> = reader.iter_chunks(&manifest).map(|r| r.unwrap()).collect();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let collected = reader.get_all_chunks(&manifest).await.unwrap();
 
-        assert_eq!(iterated, chunks);
+        assert_eq!(collected, chunks);
     }
 
     // ========================================
     // Integration Tests
     // ========================================
 
-    #[test]
-    fn test_manifest_tree_full_roundtrip() {
+    #[tokio::test]
+    async fn test_manifest_tree_full_roundtrip() {
         let (store, _temp) = create_test_store();
         let original_chunks = generate_chunks(1000);
 
@@ -1387,8 +1316,9 @@ mod tree_tests {
         assert!(restored.is_tree());
 
         // Read all chunks through tree
-        let reader = TreeReader::new(&store);
-        let read_chunks = reader.get_all_chunks(&restored).unwrap();
+        let provider = LocalProvider::new(store);
+        let reader = TreeReader::with_provider(&provider);
+        let read_chunks = reader.get_all_chunks(&restored).await.unwrap();
 
         assert_eq!(read_chunks, original_chunks);
     }

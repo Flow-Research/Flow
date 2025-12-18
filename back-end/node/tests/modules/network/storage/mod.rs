@@ -1,3 +1,5 @@
+pub mod content;
+
 #[cfg(test)]
 mod tests {
     use crate::bootstrap::init::{remove_envs, set_envs};

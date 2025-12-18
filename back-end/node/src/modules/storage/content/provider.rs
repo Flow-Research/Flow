@@ -84,8 +84,8 @@ impl From<ContentProviderError> for errors::AppError {
 /// This abstraction allows components like `DagReader` to work transparently
 /// with different block sources:
 /// - `LocalProvider`: Local BlockStore (RocksDB)
-/// - `NetworkProvider`: Remote peers via libp2p (future)
-/// - `CachingProvider`: Combination with caching (future)
+/// - `NetworkProvider`: Remote peers via libp2p
+/// - `CachingProvider`: Combination with caching
 ///
 /// All methods are async to accommodate network operations in remote providers.
 #[async_trait]

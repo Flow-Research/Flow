@@ -30,7 +30,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::modules::storage::content::TreeNode;
+use crate::modules::storage::content::{
+    ContentProvider, ContentProviderError, LocalProvider, TreeNode,
+};
 
 use super::block::Block;
 use super::block_store::BlockStore;
@@ -66,6 +68,10 @@ pub enum DagError {
     #[error("Chunk not found: {0}")]
     ChunkNotFound(ContentId),
 
+    /// Tree node not found during traversal.
+    #[error("Tree node not found: {0}")]
+    TreeNodeNotFound(ContentId),
+
     /// Invalid manifest data.
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
@@ -73,6 +79,10 @@ pub enum DagError {
     /// Range out of bounds.
     #[error("Range {start}..{end} out of bounds for size {size}")]
     RangeOutOfBounds { start: u64, end: u64, size: u64 },
+
+    /// Content provider error.
+    #[error("Content provider error: {0}")]
+    Provider(#[from] ContentProviderError),
 }
 
 /// Result type for DAG operations.
@@ -405,59 +415,76 @@ impl DagBuilder {
 }
 
 // ============================================================================
-// DagReader
+// DagReader - Generic over ContentProvider
 // ============================================================================
 
 /// Reader for content DAGs.
 ///
-/// Retrieves content from a DAG given its root CID. Supports:
-/// - Full content retrieval
-/// - Byte range reads
-/// - Lazy chunk iteration
+/// Generic over `ContentProvider` to support reading from:
+/// - `LocalProvider`: Fast local storage only
+/// - `NetworkProvider`: Local-first with network fallback
 ///
 /// # Example
 ///
 /// ```ignore
-/// let reader = DagReader::new(&block_store);
+/// // Local-only reading
+/// let reader = DagReader::local(block_store.clone());
+/// let content = reader.read_all(&root_cid).await?;
 ///
-/// // Read entire content
-/// let content = reader.read_all(&root_cid)?;
-///
-/// // Read byte range
-/// let partial = reader.read_range(&root_cid, 1000..2000)?;
-///
-/// // Iterate chunks lazily
-/// for chunk_result in reader.iter_chunks(&root_cid)? {
-///     let chunk_data = chunk_result?;
-///     process_chunk(&chunk_data);
-/// }
+/// // Network-aware reading
+/// let network_provider = NetworkProvider::new(local, network_manager, config);
+/// let reader = DagReader::with_provider(network_provider);
+/// let content = reader.read_all(&remote_cid).await?;
 /// ```
-pub struct DagReader<'a> {
-    block_store: &'a BlockStore,
+pub struct DagReader<P: ContentProvider> {
+    provider: P,
 }
 
-impl<'a> DagReader<'a> {
-    /// Create a new DAG reader.
-    pub fn new(block_store: &'a BlockStore) -> Self {
-        Self { block_store }
+impl DagReader<LocalProvider> {
+    /// Create a DAG reader for local-only access.
+    ///
+    /// This is a convenience constructor for reading from local BlockStore.
+    ///
+    /// # Arguments
+    /// * `block_store` - The block store to read from
+    pub fn local(block_store: Arc<BlockStore>) -> Self {
+        debug!("Creating local-only DagReader");
+        Self {
+            provider: LocalProvider::new(block_store),
+        }
+    }
+}
+
+impl<P: ContentProvider> DagReader<P> {
+    /// Create a DAG reader with a custom provider.
+    ///
+    /// # Arguments
+    /// * `provider` - The content provider to use for block retrieval
+    pub fn with_provider(provider: P) -> Self {
+        debug!("Creating DagReader with custom provider");
+        Self { provider }
+    }
+
+    /// Get a reference to the underlying provider.
+    pub fn provider(&self) -> &P {
+        &self.provider
     }
 
     /// Read and parse the manifest from a root CID.
     ///
     /// # Arguments
-    ///
     /// * `root_cid` - The root CID of the manifest
     ///
     /// # Returns
-    ///
     /// The parsed `DocumentManifest`.
     #[instrument(skip(self), fields(cid = %root_cid))]
-    pub fn read_manifest(&self, root_cid: &ContentId) -> DagResult<DocumentManifest> {
+    pub async fn read_manifest(&self, root_cid: &ContentId) -> DagResult<DocumentManifest> {
         debug!("Reading manifest");
 
         let block = self
-            .block_store
-            .get(root_cid)?
+            .provider
+            .get_block(root_cid)
+            .await?
             .ok_or_else(|| DagError::ManifestNotFound(root_cid.clone()))?;
 
         let manifest = DocumentManifest::from_dag_cbor(block.data())
@@ -480,15 +507,13 @@ impl<'a> DagReader<'a> {
     /// and concatenates them into the original content.
     ///
     /// # Arguments
-    ///
     /// * `root_cid` - The root CID of the manifest
     ///
     /// # Returns
-    ///
     /// The reconstructed content as bytes.
     #[instrument(skip(self), fields(cid = %root_cid))]
-    pub fn read_all(&self, root_cid: &ContentId) -> DagResult<Vec<u8>> {
-        let manifest = self.read_manifest(root_cid)?;
+    pub async fn read_all(&self, root_cid: &ContentId) -> DagResult<Vec<u8>> {
+        let manifest = self.read_manifest(root_cid).await?;
 
         info!(
             name = ?manifest.name,
@@ -498,16 +523,17 @@ impl<'a> DagReader<'a> {
         );
 
         // Get all chunk CIDs
-        let tree_reader = TreeReader::new(self.block_store);
-        let chunk_cids = tree_reader.get_all_chunks(&manifest)?;
+        let tree_reader = TreeReader::with_provider(&self.provider);
+        let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
 
         // Fetch and concatenate chunks
         let mut content = Vec::with_capacity(manifest.total_size as usize);
 
         for (i, cid) in chunk_cids.iter().enumerate() {
             let block = self
-                .block_store
-                .get(cid)?
+                .provider
+                .get_block(cid)
+                .await?
                 .ok_or_else(|| DagError::ChunkNotFound(cid.clone()))?;
 
             content.extend_from_slice(block.data());
@@ -531,16 +557,14 @@ impl<'a> DagReader<'a> {
     /// Efficiently fetches only the chunks needed to satisfy the range request.
     ///
     /// # Arguments
-    ///
     /// * `root_cid` - The root CID of the manifest
     /// * `range` - The byte range to read (start..end)
     ///
     /// # Returns
-    ///
     /// The bytes within the specified range.
     #[instrument(skip(self), fields(cid = %root_cid, start = range.start, end = range.end))]
-    pub fn read_range(&self, root_cid: &ContentId, range: Range<u64>) -> DagResult<Vec<u8>> {
-        let manifest = self.read_manifest(root_cid)?;
+    pub async fn read_range(&self, root_cid: &ContentId, range: Range<u64>) -> DagResult<Vec<u8>> {
+        let manifest = self.read_manifest(root_cid).await?;
 
         // Validate range
         if range.start >= manifest.total_size {
@@ -564,8 +588,8 @@ impl<'a> DagReader<'a> {
         );
 
         // Get all chunk CIDs (we need them to calculate offsets)
-        let tree_reader = TreeReader::new(self.block_store);
-        let chunk_cids = tree_reader.get_all_chunks(&manifest)?;
+        let tree_reader = TreeReader::with_provider(&self.provider);
+        let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
 
         let mut result = Vec::with_capacity(range_size);
         let mut current_offset = 0u64;
@@ -573,8 +597,9 @@ impl<'a> DagReader<'a> {
         for cid in chunk_cids.iter() {
             // Fetch chunk to get its size
             let block = self
-                .block_store
-                .get(cid)?
+                .provider
+                .get_block(cid)
+                .await?
                 .ok_or_else(|| DagError::ChunkNotFound(cid.clone()))?;
 
             let chunk_size = block.data().len() as u64;
@@ -615,37 +640,56 @@ impl<'a> DagReader<'a> {
         Ok(result)
     }
 
-    /// Create a lazy iterator over chunk data.
+    /// Collect all chunk data asynchronously.
     ///
-    /// Fetches chunks on-demand, suitable for streaming large files.
+    /// Fetches all chunks and returns them as a Vec of byte vectors.
+    /// Suitable for streaming or processing chunks individually.
     ///
     /// # Arguments
-    ///
     /// * `root_cid` - The root CID of the manifest
     ///
     /// # Returns
-    ///
-    /// An iterator that yields chunk data as `Vec<u8>`.
+    /// A vector of chunk data (each chunk as Vec<u8>).
     #[instrument(skip(self), fields(cid = %root_cid))]
-    pub fn iter_chunks(&'a self, root_cid: &ContentId) -> DagResult<DagChunkIterator<'a>> {
-        let manifest = self.read_manifest(root_cid)?;
+    pub async fn collect_chunks(&self, root_cid: &ContentId) -> DagResult<Vec<Vec<u8>>> {
+        let manifest = self.read_manifest(root_cid).await?;
 
-        debug!(chunks = manifest.chunk_count(), "Creating chunk iterator");
+        debug!(
+            chunks = manifest.chunk_count(),
+            "Collecting chunks asynchronously"
+        );
 
-        Ok(DagChunkIterator::new(self.block_store, Arc::new(manifest)))
+        let tree_reader = TreeReader::with_provider(&self.provider);
+        let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
+
+        let mut chunks = Vec::with_capacity(chunk_cids.len());
+
+        for cid in chunk_cids.iter() {
+            let block = self
+                .provider
+                .get_block(cid)
+                .await?
+                .ok_or_else(|| DagError::ChunkNotFound(cid.clone()))?;
+
+            chunks.push(block.data().to_vec());
+        }
+
+        info!(
+            chunks_collected = chunks.len(),
+            "Chunks collected successfully"
+        );
+        Ok(chunks)
     }
 
     /// Get content metadata without reading the full content.
     ///
     /// # Arguments
-    ///
     /// * `root_cid` - The root CID of the manifest
     ///
     /// # Returns
-    ///
     /// The manifest containing all metadata.
-    pub fn get_metadata(&self, root_cid: &ContentId) -> DagResult<DocumentManifest> {
-        self.read_manifest(root_cid)
+    pub async fn get_metadata(&self, root_cid: &ContentId) -> DagResult<DocumentManifest> {
+        self.read_manifest(root_cid).await
     }
 }
 
@@ -808,7 +852,7 @@ mod tests {
     }
 
     // ========================================
-    // DagMetadata Tests
+    // DagMetadata Tests (unchanged - sync)
     // ========================================
 
     #[test]
@@ -836,8 +880,8 @@ mod tests {
     // DagBuilder Tests - Empty Content
     // ========================================
 
-    #[test]
-    fn test_build_empty_content() {
+    #[tokio::test]
+    async fn test_build_empty_content() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -850,8 +894,8 @@ mod tests {
         assert_eq!(result.manifest.total_size, 0);
 
         // Verify we can read it back
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert!(content.is_empty());
     }
 
@@ -859,8 +903,8 @@ mod tests {
     // DagBuilder Tests - Single Chunk
     // ========================================
 
-    #[test]
-    fn test_build_single_chunk() {
+    #[tokio::test]
+    async fn test_build_single_chunk() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(1024);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -878,8 +922,8 @@ mod tests {
         assert_eq!(result.manifest.content_type, Some("text/plain".into()));
 
         // Verify round-trip
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert_eq!(content, data);
     }
 
@@ -887,8 +931,8 @@ mod tests {
     // DagBuilder Tests - Multiple Chunks
     // ========================================
 
-    #[test]
-    fn test_build_multiple_chunks() {
+    #[tokio::test]
+    async fn test_build_multiple_chunks() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -903,8 +947,8 @@ mod tests {
         assert_eq!(result.total_bytes, 1024);
 
         // Verify round-trip
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert_eq!(content, data);
     }
 
@@ -912,8 +956,8 @@ mod tests {
     // DagBuilder Tests - Large File
     // ========================================
 
-    #[test]
-    fn test_build_large_file() {
+    #[tokio::test]
+    async fn test_build_large_file() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -930,8 +974,8 @@ mod tests {
         assert_eq!(result.total_bytes, 102400);
 
         // Verify round-trip
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert_eq!(content, data);
     }
 
@@ -939,8 +983,8 @@ mod tests {
     // DagBuilder Tests - Streaming
     // ========================================
 
-    #[test]
-    fn test_build_from_reader() {
+    #[tokio::test]
+    async fn test_build_from_reader() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -955,8 +999,8 @@ mod tests {
         assert_eq!(result.total_bytes, 1024);
 
         // Verify round-trip
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert_eq!(content, data);
     }
 
@@ -964,8 +1008,8 @@ mod tests {
     // DagReader Tests - Read Manifest
     // ========================================
 
-    #[test]
-    fn test_read_manifest() {
+    #[tokio::test]
+    async fn test_read_manifest() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -977,21 +1021,21 @@ mod tests {
 
         let result = builder.build_from_bytes(data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let manifest = reader.read_manifest(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let manifest = reader.read_manifest(&result.root_cid).await.unwrap();
 
         assert_eq!(manifest.name, Some("manifest-test.txt".into()));
         assert_eq!(manifest.publisher_did, TEST_DID);
         assert_eq!(manifest.get_metadata("key"), Some("value"));
     }
 
-    #[test]
-    fn test_read_manifest_not_found() {
+    #[tokio::test]
+    async fn test_read_manifest_not_found() {
         let (store, _dir) = create_test_store();
-        let reader = DagReader::new(&store);
+        let reader = DagReader::local(store.clone());
 
         let fake_cid = ContentId::from_bytes(b"nonexistent");
-        let result = reader.read_manifest(&fake_cid);
+        let result = reader.read_manifest(&fake_cid).await;
 
         assert!(matches!(result, Err(DagError::ManifestNotFound(_))));
     }
@@ -1000,8 +1044,8 @@ mod tests {
     // DagReader Tests - Read Range
     // ========================================
 
-    #[test]
-    fn test_read_range_full() {
+    #[tokio::test]
+    async fn test_read_range_full() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1010,13 +1054,13 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let content = reader.read_range(&result.root_cid, 0..1024).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_range(&result.root_cid, 0..1024).await.unwrap();
         assert_eq!(content, data);
     }
 
-    #[test]
-    fn test_read_range_partial_within_chunk() {
+    #[tokio::test]
+    async fn test_read_range_partial_within_chunk() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1025,13 +1069,13 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let content = reader.read_range(&result.root_cid, 10..100).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_range(&result.root_cid, 10..100).await.unwrap();
         assert_eq!(content, &data[10..100]);
     }
 
-    #[test]
-    fn test_read_range_across_chunks() {
+    #[tokio::test]
+    async fn test_read_range_across_chunks() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1040,14 +1084,14 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
+        let reader = DagReader::local(store.clone());
         // Range that spans chunks 1 and 2 (256-byte chunks)
-        let content = reader.read_range(&result.root_cid, 200..400).unwrap();
+        let content = reader.read_range(&result.root_cid, 200..400).await.unwrap();
         assert_eq!(content, &data[200..400]);
     }
 
-    #[test]
-    fn test_read_range_from_middle_to_end() {
+    #[tokio::test]
+    async fn test_read_range_from_middle_to_end() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1056,13 +1100,16 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let content = reader.read_range(&result.root_cid, 512..1024).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader
+            .read_range(&result.root_cid, 512..1024)
+            .await
+            .unwrap();
         assert_eq!(content, &data[512..1024]);
     }
 
-    #[test]
-    fn test_read_range_clamps_end() {
+    #[tokio::test]
+    async fn test_read_range_clamps_end() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1071,14 +1118,17 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
+        let reader = DagReader::local(store.clone());
         // End beyond file size should be clamped
-        let content = reader.read_range(&result.root_cid, 900..2000).unwrap();
+        let content = reader
+            .read_range(&result.root_cid, 900..2000)
+            .await
+            .unwrap();
         assert_eq!(content, &data[900..1024]);
     }
 
-    #[test]
-    fn test_read_range_out_of_bounds() {
+    #[tokio::test]
+    async fn test_read_range_out_of_bounds() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1087,17 +1137,20 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let err = reader.read_range(&result.root_cid, 1000..2000).unwrap_err();
+        let reader = DagReader::local(store.clone());
+        let err = reader
+            .read_range(&result.root_cid, 1000..2000)
+            .await
+            .unwrap_err();
         assert!(matches!(err, DagError::RangeOutOfBounds { .. }));
     }
 
     // ========================================
-    // DagReader Tests - Chunk Iterator
+    // DagReader Tests - Collect Chunks (replaces iter_chunks)
     // ========================================
 
-    #[test]
-    fn test_iter_chunks() {
+    #[tokio::test]
+    async fn test_collect_chunks() {
         let (store, _dir) = create_test_store();
         let chunker = create_fixed_chunker(256);
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1106,28 +1159,39 @@ mod tests {
         let metadata = DagMetadata::new(TEST_DID);
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let mut iter = reader.iter_chunks(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let chunks = reader.collect_chunks(&result.root_cid).await.unwrap();
 
-        let mut reconstructed = Vec::new();
-        let mut chunk_count = 0;
+        assert_eq!(chunks.len(), 4); // 1024 / 256 = 4 chunks
 
-        while let Some(chunk_result) = iter.next() {
-            let chunk_data = chunk_result.unwrap();
-            reconstructed.extend_from_slice(&chunk_data);
-            chunk_count += 1;
-        }
-
-        assert_eq!(chunk_count, 4);
+        // Verify concatenation matches original
+        let reconstructed: Vec<u8> = chunks.into_iter().flatten().collect();
         assert_eq!(reconstructed, data);
+    }
+
+    #[tokio::test]
+    async fn test_collect_chunks_single() {
+        let (store, _dir) = create_test_store();
+        let chunker = create_fixed_chunker(1024);
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let data = b"Small data";
+        let metadata = DagMetadata::new(TEST_DID);
+        let result = builder.build_from_bytes(data, metadata).unwrap();
+
+        let reader = DagReader::local(store.clone());
+        let chunks = reader.collect_chunks(&result.root_cid).await.unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], data.to_vec());
     }
 
     // ========================================
     // DagReader Tests - Get Metadata
     // ========================================
 
-    #[test]
-    fn test_get_metadata() {
+    #[tokio::test]
+    async fn test_get_metadata() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1140,8 +1204,8 @@ mod tests {
 
         let result = builder.build_from_bytes(data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let manifest = reader.get_metadata(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let manifest = reader.get_metadata(&result.root_cid).await.unwrap();
 
         assert_eq!(manifest.name, Some("metadata.txt".into()));
         assert_eq!(manifest.content_type, Some("text/plain".into()));
@@ -1150,11 +1214,42 @@ mod tests {
     }
 
     // ========================================
+    // DagReader Tests - With Custom Provider
+    // ========================================
+
+    #[tokio::test]
+    async fn test_with_custom_provider() {
+        let (store, _dir) = create_test_store();
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let data = b"Custom provider test";
+        let metadata = DagMetadata::new(TEST_DID);
+        let result = builder.build_from_bytes(data, metadata).unwrap();
+
+        // Create reader with explicit LocalProvider
+        let local_provider = LocalProvider::new(store.clone());
+        let reader = DagReader::with_provider(local_provider);
+
+        let content = reader.read_all(&result.root_cid).await.unwrap();
+        assert_eq!(content, data);
+    }
+
+    #[tokio::test]
+    async fn test_provider_accessor() {
+        let (store, _dir) = create_test_store();
+        let reader = DagReader::local(store.clone());
+
+        // Just verify we can access the provider
+        let _provider = reader.provider();
+    }
+
+    // ========================================
     // Round-Trip Tests
     // ========================================
 
-    #[test]
-    fn test_round_trip_deterministic() {
+    #[tokio::test]
+    async fn test_round_trip_deterministic() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1173,8 +1268,8 @@ mod tests {
         assert_eq!(result1.root_cid, result2.root_cid);
     }
 
-    #[test]
-    fn test_round_trip_binary_data() {
+    #[tokio::test]
+    async fn test_round_trip_binary_data() {
         let (store, _dir) = create_test_store();
         let chunker = create_test_chunker();
         let builder = DagBuilder::new(store.clone(), chunker);
@@ -1187,9 +1282,39 @@ mod tests {
 
         let result = builder.build_from_bytes(&data, metadata).unwrap();
 
-        let reader = DagReader::new(&store);
-        let content = reader.read_all(&result.root_cid).unwrap();
+        let reader = DagReader::local(store.clone());
+        let content = reader.read_all(&result.root_cid).await.unwrap();
         assert_eq!(content, data);
+    }
+
+    // ========================================
+    // DagChunkIterator Tests (sync, local-only)
+    // ========================================
+
+    #[test]
+    fn test_dag_chunk_iterator_sync() {
+        let (store, _dir) = create_test_store();
+        let chunker = create_fixed_chunker(256);
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
+        let metadata = DagMetadata::new(TEST_DID);
+        let result = builder.build_from_bytes(&data, metadata).unwrap();
+
+        // Use the sync DagChunkIterator directly with BlockStore
+        let iter = DagChunkIterator::new(&store, Arc::new(result.manifest));
+
+        let mut reconstructed = Vec::new();
+        let mut chunk_count = 0;
+
+        for chunk_result in iter {
+            let chunk_data = chunk_result.unwrap();
+            reconstructed.extend_from_slice(&chunk_data);
+            chunk_count += 1;
+        }
+
+        assert_eq!(chunk_count, 4);
+        assert_eq!(reconstructed, data);
     }
 
     // ========================================
@@ -1203,7 +1328,7 @@ mod tests {
         let err = DagError::ManifestNotFound(cid.clone());
         assert!(err.to_string().contains("Manifest not found"));
 
-        let err = DagError::ChunkNotFound(cid);
+        let err = DagError::ChunkNotFound(cid.clone());
         assert!(err.to_string().contains("Chunk not found"));
 
         let err = DagError::RangeOutOfBounds {
@@ -1212,5 +1337,19 @@ mod tests {
             size: 50,
         };
         assert!(err.to_string().contains("out of bounds"));
+
+        // Test provider error variant
+        let provider_err = ContentProviderError::NotFound(cid);
+        let err = DagError::Provider(provider_err);
+        assert!(err.to_string().contains("Content provider error"));
+    }
+
+    #[test]
+    fn test_error_from_content_provider_error() {
+        let cid = ContentId::from_bytes(b"test");
+        let provider_err = ContentProviderError::NotFound(cid);
+        let dag_err: DagError = provider_err.into();
+
+        assert!(matches!(dag_err, DagError::Provider(_)));
     }
 }
