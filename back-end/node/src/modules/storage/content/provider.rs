@@ -18,6 +18,7 @@
 //! ```
 
 use async_trait::async_trait;
+use futures::{StreamExt, stream};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -114,6 +115,38 @@ pub trait ContentProvider: Send + Sync {
     /// * `Ok(false)` - Block does not exist
     /// * `Err(_)` - An error occurred during the check
     async fn has_block(&self, cid: &ContentId) -> Result<bool, ContentProviderError>;
+
+    /// Retrieve multiple blocks by their CIDs in a batch operation.
+    ///
+    /// This is more efficient than calling `get_block` multiple times,
+    /// especially for network providers where it enables parallel fetching,
+    /// and for local providers where it enables batched disk I/O.
+    ///
+    /// # Arguments
+    /// * `cids` - Slice of content identifiers to retrieve
+    ///
+    /// # Returns
+    /// A vector of `Option<Block>` in the same order as the input CIDs.
+    /// Each element is `Some(block)` if found, `None` if not found.
+    ///
+    /// # Default Implementation
+    /// Calls `get_block` sequentially for each CID. Implementors should
+    /// override this for better performance.
+    async fn get_blocks(
+        &self,
+        cids: &[ContentId],
+    ) -> Result<Vec<Option<Block>>, ContentProviderError> {
+        debug!(
+            count = cids.len(),
+            "get_blocks: using default sequential implementation"
+        );
+
+        let mut results = Vec::with_capacity(cids.len());
+        for cid in cids {
+            results.push(self.get_block(cid).await?);
+        }
+        Ok(results)
+    }
 }
 
 // ============================================================================
@@ -214,6 +247,52 @@ impl ContentProvider for LocalProvider {
             }
         }
     }
+
+    /// Optimized batch retrieval using RocksDB's multi_get.
+    ///
+    /// Uses a single `spawn_blocking` call for all reads, leveraging
+    /// RocksDB's `multi_get_cf` for efficient batch disk I/O.
+    #[instrument(skip(self), fields(count = cids.len()))]
+    async fn get_blocks(
+        &self,
+        cids: &[ContentId],
+    ) -> Result<Vec<Option<Block>>, ContentProviderError> {
+        if cids.is_empty() {
+            debug!("Empty batch request");
+            return Ok(vec![]);
+        }
+
+        let store = self.block_store.clone();
+        let cids = cids.to_vec();
+        let cids_length = cids.len();
+
+        debug!(batch_size = cids.len(), "Executing batch block retrieval");
+
+        // Run the batch RocksDB operation on a blocking thread
+        let result = tokio::task::spawn_blocking(move || store.get_batch(&cids))
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "spawn_blocking failed for get_blocks");
+                ContentProviderError::Internal(format!("Task join error: {}", e))
+            })?;
+
+        match result {
+            Ok(blocks) => {
+                let found = blocks.iter().filter(|b| b.is_some()).count();
+                debug!(
+                    batch_size = cids_length,
+                    found,
+                    missing = cids_length - found,
+                    "Batch retrieval complete"
+                );
+                Ok(blocks)
+            }
+            Err(e) => {
+                warn!(error = %e, "BlockStore batch error");
+                Err(ContentProviderError::from(e))
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -238,6 +317,11 @@ pub struct NetworkProviderConfig {
 
     /// Retry delay between provider attempts (default: 100ms).
     pub retry_delay: Duration,
+
+    /// Maximum number of parallel network fetch operations.
+    /// This limits concurrent DHT queries and block requests to avoid
+    /// overwhelming the network.
+    pub max_parallel_fetch: usize,
 }
 
 impl Default for NetworkProviderConfig {
@@ -248,6 +332,7 @@ impl Default for NetworkProviderConfig {
             check_network_for_existence: false,
             request_timeout: Duration::from_secs(30),
             retry_delay: Duration::from_millis(100),
+            max_parallel_fetch: 10,
         }
     }
 }
@@ -261,6 +346,7 @@ impl NetworkProviderConfig {
     /// - `NETWORK_PROVIDER_CHECK_NETWORK_EXISTENCE`: Check network for has_block
     /// - `NETWORK_PROVIDER_TIMEOUT_SECS`: Request timeout in seconds
     /// - `NETWORK_PROVIDER_RETRY_DELAY_MS`: Retry delay in milliseconds
+    /// - `NETWORK_PROVIDER_MAX_PARALLEL_FETCHES`: Max parallel fetch operations
     pub fn from_env() -> Self {
         use std::env;
 
@@ -287,6 +373,10 @@ impl NetworkProviderConfig {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(100),
             ),
+            max_parallel_fetch: env::var("NETWORK_PROVIDER_MAX_PARALLEL_FETCH")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
         }
     }
 
@@ -527,6 +617,112 @@ impl NetworkProvider {
 
         Ok(!discovery_result.providers.is_empty())
     }
+
+    /// Fetch a single block from the network (standalone helper for parallel fetching).
+    ///
+    /// Returns `None` if the block couldn't be fetched (no providers, all attempts failed, etc.)
+    /// instead of returning an error, to allow partial success in batch operations.
+    async fn fetch_single_with_config(
+        network: &Arc<NetworkManager>,
+        cid: &ContentId,
+        config: &NetworkProviderConfig,
+    ) -> Option<Block> {
+        // Query DHT for providers
+        let discovery_result = match network.get_providers(cid.clone()).await {
+            Ok(result) => result,
+            Err(e) => {
+                debug!(%cid, error = %e, "DHT provider discovery failed");
+                return None;
+            }
+        };
+
+        if discovery_result.providers.is_empty() {
+            debug!(%cid, "No providers found");
+            return None;
+        }
+
+        debug!(
+            %cid,
+            provider_count = discovery_result.providers.len(),
+            "Found providers, attempting fetch"
+        );
+
+        // Try providers
+        let max_attempts = config
+            .max_provider_attempts
+            .min(discovery_result.providers.len());
+
+        for (attempt, peer_id) in discovery_result
+            .providers
+            .iter()
+            .take(max_attempts)
+            .enumerate()
+        {
+            match network.request_block(*peer_id, cid.clone()).await {
+                Ok(block) => {
+                    debug!(%cid, %peer_id, "Successfully fetched block");
+                    return Some(block);
+                }
+                Err(e) => {
+                    debug!(
+                        %cid,
+                        %peer_id,
+                        error = %e,
+                        attempt = attempt + 1,
+                        max_attempts,
+                        "Failed to fetch from provider"
+                    );
+
+                    // Brief delay before next attempt
+                    if attempt + 1 < max_attempts {
+                        tokio::time::sleep(config.retry_delay).await;
+                    }
+                }
+            }
+        }
+
+        debug!(%cid, "All provider attempts exhausted");
+        None
+    }
+
+    /// Cache multiple blocks in local storage.
+    #[instrument(skip(self, blocks), fields(count = blocks.len()))]
+    async fn cache_blocks(&self, blocks: &[Block]) {
+        if blocks.is_empty() {
+            return;
+        }
+
+        let store = self.local.block_store().clone();
+        let blocks = blocks.to_vec();
+        let blocks_length = blocks.len();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let mut success_count = 0;
+            for block in &blocks {
+                match store.put(block) {
+                    Ok(_) => success_count += 1,
+                    Err(e) => {
+                        warn!(cid = %block.cid(), error = %e, "Failed to cache block");
+                    }
+                }
+            }
+            success_count
+        })
+        .await;
+
+        match result {
+            Ok(count) => {
+                debug!(
+                    cached = count,
+                    total = blocks_length,
+                    "Batch cache complete"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "spawn_blocking failed for batch cache");
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -584,6 +780,116 @@ impl ContentProvider for NetworkProvider {
         }
 
         Ok(false)
+    }
+
+    /// Retrieve multiple blocks, checking local storage first then fetching
+    /// missing blocks from the network in parallel.
+    ///
+    /// # Strategy
+    /// 1. Batch-check local BlockStore for all CIDs
+    /// 2. For CIDs not found locally, fetch from network in parallel
+    /// 3. Cache all fetched blocks locally if caching is enabled
+    /// 4. Return results in same order as input CIDs
+    #[instrument(skip(self), fields(count = cids.len()))]
+    async fn get_blocks(
+        &self,
+        cids: &[ContentId],
+    ) -> Result<Vec<Option<Block>>, ContentProviderError> {
+        if cids.is_empty() {
+            debug!("Empty batch request");
+            return Ok(vec![]);
+        }
+
+        // Step 1: Batch check local storage
+        debug!(batch_size = cids.len(), "Checking local store for batch");
+        let mut results = self.local.get_blocks(cids).await?;
+
+        // Collect indices and CIDs of missing blocks
+        let missing: Vec<(usize, ContentId)> = results
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, opt)| {
+                if opt.is_none() {
+                    Some((idx, cids[idx].clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let missing_length = missing.len();
+
+        let found_locally = cids.len() - missing_length;
+        debug!(
+            batch_size = cids.len(),
+            found_locally,
+            missing = missing_length,
+            "Local batch check complete"
+        );
+
+        // Return early if all blocks found locally
+        if missing.is_empty() {
+            info!(batch_size = cids.len(), "All blocks found locally");
+            return Ok(results);
+        }
+
+        // Step 2: Check if network manager is running
+        if !self.network.is_running().await {
+            debug!("Network manager not running, cannot fetch missing blocks");
+            return Ok(results);
+        }
+
+        // Step 3: Fetch missing blocks from network in parallel
+        info!(
+            missing_count = missing.len(),
+            max_parallel = self.config.max_parallel_fetch,
+            "Fetching missing blocks from network"
+        );
+
+        let fetch_results: Vec<(usize, Option<Block>)> = stream::iter(missing)
+            .map(|(idx, cid)| {
+                let network = self.network.clone();
+                let config = self.config.clone();
+                async move {
+                    let block = Self::fetch_single_with_config(&network, &cid, &config).await;
+                    (idx, block)
+                }
+            })
+            .buffer_unordered(self.config.max_parallel_fetch)
+            .collect()
+            .await;
+
+        // Step 4: Process results and cache fetched blocks
+        let mut fetched_count = 0;
+        let mut blocks_to_cache = Vec::new();
+
+        for (idx, block_opt) in fetch_results {
+            if let Some(block) = block_opt {
+                fetched_count += 1;
+                if self.config.cache_remote_blocks {
+                    blocks_to_cache.push(block.clone());
+                }
+                results[idx] = Some(block);
+            }
+        }
+
+        // Batch cache all fetched blocks
+        if !blocks_to_cache.is_empty() {
+            debug!(
+                cache_count = blocks_to_cache.len(),
+                "Caching fetched blocks"
+            );
+            self.cache_blocks(&blocks_to_cache).await;
+        }
+
+        info!(
+            batch_size = cids.len(),
+            found_locally,
+            fetched_from_network = fetched_count,
+            still_missing = missing_length - fetched_count,
+            "Batch retrieval complete"
+        );
+
+        Ok(results)
     }
 }
 
@@ -800,5 +1106,132 @@ mod tests {
             attempts: 3,
         };
         assert!(exhausted.to_string().contains("3"));
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_get_blocks_empty() {
+        let (store, _dir) = create_test_block_store();
+        let provider = LocalProvider::new(Arc::new(store));
+
+        let results = provider.get_blocks(&[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_get_blocks_all_found() {
+        let (store, _dir) = create_test_block_store();
+
+        // Store blocks
+        let block1 = Block::new(b"data one".to_vec());
+        let block2 = Block::new(b"data two".to_vec());
+        let cid1 = store.put(&block1).unwrap();
+        let cid2 = store.put(&block2).unwrap();
+
+        let provider = LocalProvider::new(Arc::new(store));
+        let results = provider.get_blocks(&[cid1, cid2]).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_some());
+        assert!(results[1].is_some());
+        assert_eq!(results[0].as_ref().unwrap().data(), b"data one");
+        assert_eq!(results[1].as_ref().unwrap().data(), b"data two");
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_get_blocks_mixed() {
+        let (store, _dir) = create_test_block_store();
+
+        let block = Block::new(b"exists".to_vec());
+        let existing_cid = store.put(&block).unwrap();
+        let missing_cid = ContentId::from_bytes(b"missing");
+
+        let provider = LocalProvider::new(Arc::new(store));
+        let results = provider
+            .get_blocks(&[existing_cid, missing_cid])
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_some());
+        assert!(results[1].is_none());
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_get_blocks_single() {
+        let (store, _dir) = create_test_block_store();
+
+        let block = Block::new(b"single block".to_vec());
+        let cid = store.put(&block).unwrap();
+
+        let provider = LocalProvider::new(Arc::new(store));
+        let results = provider.get_blocks(&[cid]).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_some());
+        assert_eq!(results[0].as_ref().unwrap().data(), b"single block");
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_get_blocks_large_batch() {
+        let (store, _dir) = create_test_block_store();
+
+        // Create 100 blocks
+        let blocks: Vec<Block> = (0..100)
+            .map(|i| Block::new(format!("block_{:03}", i).into_bytes()))
+            .collect();
+
+        let cids: Vec<ContentId> = blocks.iter().map(|b| store.put(b).unwrap()).collect();
+
+        let provider = LocalProvider::new(Arc::new(store));
+        let results = provider.get_blocks(&cids).await.unwrap();
+
+        assert_eq!(results.len(), 100);
+        for (i, result) in results.iter().enumerate() {
+            let expected = format!("block_{:03}", i);
+            assert_eq!(result.as_ref().unwrap().data(), expected.as_bytes());
+        }
+    }
+
+    // Test default trait implementation
+    #[tokio::test]
+    async fn test_default_get_blocks_implementation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Create a mock provider that tracks call count
+        struct MockProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl ContentProvider for MockProvider {
+            async fn get_block(
+                &self,
+                _cid: &ContentId,
+            ) -> Result<Option<Block>, ContentProviderError> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(Block::new(b"mock".to_vec())))
+            }
+
+            async fn has_block(&self, _cid: &ContentId) -> Result<bool, ContentProviderError> {
+                Ok(true)
+            }
+            // Uses default get_blocks implementation
+        }
+
+        let provider = MockProvider {
+            call_count: AtomicUsize::new(0),
+        };
+
+        let cids = vec![
+            ContentId::from_bytes(b"a"),
+            ContentId::from_bytes(b"b"),
+            ContentId::from_bytes(b"c"),
+        ];
+
+        let results = provider.get_blocks(&cids).await.unwrap();
+
+        // Default implementation calls get_block for each CID
+        assert_eq!(provider.call_count.load(Ordering::SeqCst), 3);
+        assert_eq!(results.len(), 3);
     }
 }

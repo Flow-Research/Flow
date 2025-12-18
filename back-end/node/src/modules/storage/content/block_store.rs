@@ -274,6 +274,90 @@ impl BlockStore {
         }
     }
 
+    /// Retrieve multiple blocks by their CIDs in a single batch operation.
+    ///
+    /// This is more efficient than calling `get()` multiple times as it uses
+    /// RocksDB's `multi_get_cf` to batch disk I/O.
+    ///
+    /// # Arguments
+    /// * `cids` - Slice of content identifiers to retrieve
+    ///
+    /// # Returns
+    /// A vector of `Option<Block>` in the same order as the input CIDs.
+    /// Each element is `Some(block)` if found, `None` if not found.
+    #[instrument(skip(self), fields(count = cids.len()))]
+    pub fn get_batch(&self, cids: &[ContentId]) -> Result<Vec<Option<Block>>, BlockStoreError> {
+        if cids.is_empty() {
+            debug!("Empty batch request, returning empty result");
+            return Ok(vec![]);
+        }
+
+        let cf = self.db.cf_handle(CF_BLOCKS).ok_or_else(|| {
+            BlockStoreError::Database("Blocks column family not found".to_string())
+        })?;
+
+        // Convert CIDs to byte keys
+        let keys: Vec<Vec<u8>> = cids.iter().map(|cid| cid.to_bytes()).collect();
+
+        debug!(batch_size = cids.len(), "Executing batch block retrieval");
+
+        // Use RocksDB's multi_get for efficient batch read
+        let results = self
+            .db
+            .multi_get_cf(keys.iter().map(|k| (&cf, k.as_slice())));
+
+        let mut blocks = Vec::with_capacity(cids.len());
+        let mut found_count = 0;
+        let mut error_count = 0;
+
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(Some(bytes)) => {
+                    match Block::from_stored_bytes(cids[i].clone(), &bytes) {
+                        Ok(block) => {
+                            // Verify integrity
+                            if !block.verify() {
+                                error!(
+                                    cid = %cids[i],
+                                    "Block integrity verification failed in batch"
+                                );
+                                return Err(BlockStoreError::IntegrityError {
+                                    expected: cids[i].clone(),
+                                    actual: block.cid().clone(),
+                                });
+                            }
+                            found_count += 1;
+                            blocks.push(Some(block));
+                        }
+                        Err(e) => {
+                            error_count += 1;
+                            error!(cid = %cids[i], error = %e, errors = error_count, "Failed to deserialize block");
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    blocks.push(None);
+                }
+                Err(e) => {
+                    error_count += 1;
+                    error!(cid = %cids[i], error = %e, errors = error_count, "RocksDB error in batch get");
+                    return Err(BlockStoreError::Database(e.to_string()));
+                }
+            }
+        }
+
+        debug!(
+            batch_size = cids.len(),
+            found = found_count,
+            missing = cids.len() - found_count,
+            errors = error_count,
+            "Batch block retrieval complete"
+        );
+
+        Ok(blocks)
+    }
+
     /// Check if a block exists.
     #[instrument(skip(self), fields(cid = %cid))]
     pub fn has(&self, cid: &ContentId) -> Result<bool, BlockStoreError> {
@@ -952,6 +1036,126 @@ mod tests {
             let store = BlockStore::new(config).unwrap();
             let stats = store.stats().unwrap();
             assert_eq!(stats.block_count, 2);
+        }
+    }
+
+    #[test]
+    fn test_get_batch_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = BlockStore::new(config).unwrap();
+
+        let results = store.get_batch(&[]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_batch_all_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = BlockStore::new(config).unwrap();
+
+        // Store multiple blocks
+        let block1 = Block::new(b"block one".to_vec());
+        let block2 = Block::new(b"block two".to_vec());
+        let block3 = Block::new(b"block three".to_vec());
+
+        let cid1 = store.put(&block1).unwrap();
+        let cid2 = store.put(&block2).unwrap();
+        let cid3 = store.put(&block3).unwrap();
+
+        // Batch retrieve
+        let cids = vec![cid1.clone(), cid2.clone(), cid3.clone()];
+        let results = store.get_batch(&cids).unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_some());
+        assert!(results[1].is_some());
+        assert!(results[2].is_some());
+
+        assert_eq!(results[0].as_ref().unwrap().data(), b"block one");
+        assert_eq!(results[1].as_ref().unwrap().data(), b"block two");
+        assert_eq!(results[2].as_ref().unwrap().data(), b"block three");
+    }
+
+    #[test]
+    fn test_get_batch_mixed_hits_misses() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = BlockStore::new(config).unwrap();
+
+        // Store only some blocks
+        let block1 = Block::new(b"exists".to_vec());
+        let cid1 = store.put(&block1).unwrap();
+
+        // Create a CID for non-existent block
+        let missing_cid = ContentId::from_bytes(b"does not exist");
+
+        // Batch retrieve with mixed results
+        let cids = vec![cid1.clone(), missing_cid.clone(), cid1.clone()];
+        let results = store.get_batch(&cids).unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_some()); // First: found
+        assert!(results[1].is_none()); // Second: missing
+        assert!(results[2].is_some()); // Third: found (duplicate)
+
+        assert_eq!(results[0].as_ref().unwrap().data(), b"exists");
+        assert_eq!(results[2].as_ref().unwrap().data(), b"exists");
+    }
+
+    #[test]
+    fn test_get_batch_all_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = BlockStore::new(config).unwrap();
+
+        let cid1 = ContentId::from_bytes(b"missing1");
+        let cid2 = ContentId::from_bytes(b"missing2");
+
+        let results = store.get_batch(&[cid1, cid2]).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_none());
+        assert!(results[1].is_none());
+    }
+
+    #[test]
+    fn test_get_batch_preserves_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = BlockStore::new(config).unwrap();
+
+        // Store blocks with distinct content
+        let blocks: Vec<Block> = (0..10)
+            .map(|i| Block::new(format!("block_{}", i).into_bytes()))
+            .collect();
+
+        let cids: Vec<ContentId> = blocks.iter().map(|b| store.put(b).unwrap()).collect();
+
+        // Retrieve in reverse order
+        let reversed: Vec<ContentId> = cids.iter().rev().cloned().collect();
+        let results = store.get_batch(&reversed).unwrap();
+
+        // Verify order matches request
+        for (i, result) in results.iter().enumerate() {
+            let expected_content = format!("block_{}", 9 - i);
+            assert_eq!(result.as_ref().unwrap().data(), expected_content.as_bytes());
         }
     }
 }
