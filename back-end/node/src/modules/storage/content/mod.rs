@@ -15,7 +15,8 @@ pub use chunking::{
 };
 pub use cid::ContentId;
 pub use dag::{
-    DagBuildResult, DagBuilder, DagChunkIterator, DagError, DagMetadata, DagReader, DagResult,
+    DagBuildResult, DagBuilder, DagChunkIterator, DagError, DagMetadata, DagReader,
+    DagReaderConfig, DagResult,
 };
 pub use error::BlockStoreError;
 

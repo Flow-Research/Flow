@@ -438,14 +438,27 @@ impl TreeBuilder {
 /// Reader for traversing tree structure to get all chunk CIDs.
 ///
 /// Generic over `ContentProvider` to support both local and network retrieval.
+/// Uses batch fetching for improved performance with tree nodes.
 pub struct TreeReader<'a, P: ContentProvider> {
     provider: &'a P,
+    batch_size: usize,
 }
 
 impl<'a, P: ContentProvider> TreeReader<'a, P> {
     /// Create a new tree reader with a content provider.
+    pub fn with(provider: &'a P, batch_size: usize) -> Self {
+        Self {
+            provider,
+            batch_size: batch_size.max(1),
+        }
+    }
+
+    /// Create a new tree reader with a content provider.
     pub fn with_provider(provider: &'a P) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            batch_size: 1,
+        }
     }
 
     /// Get all chunk CIDs from a manifest, traversing tree if needed.
@@ -456,10 +469,14 @@ impl<'a, P: ContentProvider> TreeReader<'a, P> {
         match &manifest.structure {
             ManifestStructure::Flat => Ok(manifest.children.clone()),
             ManifestStructure::Tree { chunk_count, .. } => {
-                debug!(chunk_count, "Traversing tree structure");
+                debug!(
+                    chunk_count,
+                    batch_size = self.batch_size,
+                    "Traversing tree structure with batch fetching"
+                );
 
                 let mut chunks = Vec::with_capacity(*chunk_count as usize);
-                self.collect_chunks_async(&manifest.children, &mut chunks)
+                self.collect_chunks_batched(&manifest.children, &mut chunks)
                     .await?;
 
                 if chunks.len() != *chunk_count as usize {
@@ -475,28 +492,66 @@ impl<'a, P: ContentProvider> TreeReader<'a, P> {
         }
     }
 
-    /// Recursively collect chunks from tree nodes (async).
-    async fn collect_chunks_async(
+    /// Collect chunks from tree nodes using batch fetching at each level.
+    ///
+    /// Instead of fetching one node at a time, fetches all nodes at the current
+    /// level in batches, then recursively processes children.
+    async fn collect_chunks_batched(
         &self,
         node_cids: &[ContentId],
         chunks: &mut Vec<ContentId>,
     ) -> Result<(), ContentProviderError> {
-        for cid in node_cids {
-            let block = self
-                .provider
-                .get_block(cid)
-                .await?
-                .ok_or_else(|| ContentProviderError::NotFound(cid.clone()))?;
+        if node_cids.is_empty() {
+            return Ok(());
+        }
 
-            let node = TreeNode::from_dag_cbor(block.data())
-                .map_err(|e| ContentProviderError::Internal(e.to_string()))?;
+        debug!(
+            nodes_at_level = node_cids.len(),
+            batch_size = self.batch_size,
+            "Processing tree level"
+        );
 
-            if node.is_leaf_level {
-                chunks.extend(node.children.iter().cloned());
-            } else {
-                // Use Box::pin for recursive async call
-                Box::pin(self.collect_chunks_async(&node.children, chunks)).await?;
+        // Fetch all nodes at this level in batches
+        let mut all_children: Vec<ContentId> = Vec::new();
+        let mut all_leaf_chunks: Vec<ContentId> = Vec::new();
+        let mut is_leaf_level = None;
+
+        for batch in node_cids.chunks(self.batch_size) {
+            let batch_results = self.provider.get_blocks(batch).await?;
+
+            for (i, result) in batch_results.into_iter().enumerate() {
+                let block =
+                    result.ok_or_else(|| ContentProviderError::NotFound(batch[i].clone()))?;
+
+                let node = TreeNode::from_dag_cbor(block.data())
+                    .map_err(|e| ContentProviderError::Internal(e.to_string()))?;
+
+                // Validate consistency: all nodes at a level should have same is_leaf_level
+                match is_leaf_level {
+                    None => is_leaf_level = Some(node.is_leaf_level),
+                    Some(expected) if expected != node.is_leaf_level => {
+                        return Err(ContentProviderError::Internal(
+                            "Inconsistent tree structure: mixed leaf/non-leaf nodes at same level"
+                                .to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
+
+                if node.is_leaf_level {
+                    all_leaf_chunks.extend(node.children);
+                } else {
+                    all_children.extend(node.children);
+                }
             }
+        }
+
+        if is_leaf_level == Some(true) {
+            // This level points directly to data chunks
+            chunks.extend(all_leaf_chunks);
+        } else if !all_children.is_empty() {
+            // Recursively process next level
+            Box::pin(self.collect_chunks_batched(&all_children, chunks)).await?;
         }
 
         Ok(())
@@ -1091,7 +1146,10 @@ mod tests {
 
 #[cfg(test)]
 mod tree_tests {
-    use crate::modules::storage::content::{BlockStoreConfig, LocalProvider};
+    use crate::modules::storage::content::{
+        BlockStoreConfig, Chunker, ChunkingConfig, DagBuilder, DagMetadata, FastCdcChunker,
+        LocalProvider,
+    };
 
     use super::*;
     use std::sync::Arc;
@@ -1105,6 +1163,15 @@ mod tree_tests {
         };
         let store = BlockStore::new(config).unwrap();
         (Arc::new(store), temp_dir)
+    }
+
+    fn create_test_chunker() -> Box<dyn Chunker> {
+        let config = ChunkingConfig {
+            min_size: 256,
+            target_size: 1024,
+            max_size: 4096,
+        };
+        Box::new(FastCdcChunker::new(config))
     }
 
     fn generate_chunks(count: usize) -> Vec<ContentId> {
@@ -1277,6 +1344,50 @@ mod tree_tests {
         let collected = reader.get_all_chunks(&manifest).await.unwrap();
 
         assert_eq!(collected, chunks);
+    }
+
+    #[tokio::test]
+    async fn test_tree_reader_batch_fetching() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let store_config = BlockStoreConfig {
+            db_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let store = Arc::new(BlockStore::new(store_config).expect("Failed to create store"));
+
+        // Create content large enough to trigger tree structure
+        // (requires enough chunks to exceed branching factor)
+        let content: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        // Verify it created a tree structure
+        let manifest =
+            DocumentManifest::from_dag_cbor(store.get(&result.root_cid).unwrap().unwrap().data())
+                .unwrap();
+
+        // Use TreeReader with small batch size
+        let provider = LocalProvider::new(store.clone());
+        let tree_reader = TreeReader::with(&provider, 3);
+        let chunks = tree_reader.get_all_chunks(&manifest).await.unwrap();
+
+        // Verify all chunks can be fetched
+        assert!(!chunks.is_empty());
+
+        // Verify content reconstruction
+        let mut reconstructed = Vec::new();
+        for cid in &chunks {
+            let block = store.get(cid).unwrap().unwrap();
+            reconstructed.extend_from_slice(block.data());
+        }
+        assert_eq!(reconstructed, content);
     }
 
     // ========================================

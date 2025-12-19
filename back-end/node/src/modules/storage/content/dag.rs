@@ -414,6 +414,41 @@ impl DagBuilder {
     }
 }
 
+/// Configuration for DagReader batch operations.
+#[derive(Debug, Clone)]
+pub struct DagReaderConfig {
+    /// Number of blocks to fetch in a single batch.
+    /// Higher values = fewer network round-trips but more memory usage per batch.
+    pub batch_size: usize,
+}
+
+impl Default for DagReaderConfig {
+    fn default() -> Self {
+        Self { batch_size: 50 }
+    }
+}
+
+impl DagReaderConfig {
+    /// Create config from environment variables.
+    ///
+    /// - `DAG_READER_BATCH_SIZE`: Batch size for block fetching (default: 50)
+    pub fn from_env() -> Self {
+        Self {
+            batch_size: std::env::var("DAG_READER_BATCH_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50),
+        }
+    }
+
+    /// Create config with custom batch size.
+    pub fn with_batch_size(batch_size: usize) -> Self {
+        Self {
+            batch_size: batch_size.max(1), // Minimum batch size of 1
+        }
+    }
+}
+
 // ============================================================================
 // DagReader - Generic over ContentProvider
 // ============================================================================
@@ -438,6 +473,7 @@ impl DagBuilder {
 /// ```
 pub struct DagReader<P: ContentProvider> {
     provider: P,
+    config: DagReaderConfig,
 }
 
 impl DagReader<LocalProvider> {
@@ -451,6 +487,7 @@ impl DagReader<LocalProvider> {
         debug!("Creating local-only DagReader");
         Self {
             provider: LocalProvider::new(block_store),
+            config: DagReaderConfig::default(),
         }
     }
 }
@@ -462,7 +499,19 @@ impl<P: ContentProvider> DagReader<P> {
     /// * `provider` - The content provider to use for block retrieval
     pub fn with_provider(provider: P) -> Self {
         debug!("Creating DagReader with custom provider");
-        Self { provider }
+        Self {
+            provider,
+            config: DagReaderConfig::default(),
+        }
+    }
+
+    /// Create a DAG reader with custom configuration.
+    pub fn with(provider: P, config: DagReaderConfig) -> Self {
+        debug!(
+            batch_size = config.batch_size,
+            "Creating DagReader with config"
+        );
+        Self { provider, config }
     }
 
     /// Get a reference to the underlying provider.
@@ -501,6 +550,60 @@ impl<P: ContentProvider> DagReader<P> {
         Ok(manifest)
     }
 
+    /// Fetch blocks in batches, returning them in order.
+    ///
+    /// This is more efficient than fetching one at a time, especially for
+    /// network providers where it enables parallel fetching.
+    #[instrument(skip(self, cids), fields(total = cids.len(), batch_size = self.config.batch_size))]
+    async fn fetch_blocks_batched(&self, cids: &[ContentId]) -> DagResult<Vec<Block>> {
+        if cids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let batch_size = self.config.batch_size;
+        let total_chunks = cids.len();
+        let num_batches = (total_chunks + batch_size - 1) / batch_size;
+
+        debug!(
+            total_chunks,
+            batch_size, num_batches, "Fetching blocks in batches"
+        );
+
+        let mut all_blocks = Vec::with_capacity(total_chunks);
+
+        for (batch_idx, batch) in cids.chunks(batch_size).enumerate() {
+            let batch_results = self.provider.get_blocks(batch).await?;
+
+            // Verify all blocks in batch were found
+            for (i, result) in batch_results.into_iter().enumerate() {
+                let global_idx = batch_idx * batch_size + i;
+                match result {
+                    Some(block) => all_blocks.push(block),
+                    None => {
+                        return Err(DagError::ChunkNotFound(cids[global_idx].clone()));
+                    }
+                }
+            }
+
+            if (batch_idx + 1) % 10 == 0 || batch_idx + 1 == num_batches {
+                debug!(
+                    batch = batch_idx + 1,
+                    total_batches = num_batches,
+                    blocks_fetched = all_blocks.len(),
+                    "Batch fetch progress"
+                );
+            }
+        }
+
+        info!(
+            total_blocks = all_blocks.len(),
+            batches = num_batches,
+            "Batch fetch complete"
+        );
+
+        Ok(all_blocks)
+    }
+
     /// Read all content from a DAG.
     ///
     /// Fetches the manifest, retrieves all chunks (traversing tree if needed),
@@ -519,28 +622,21 @@ impl<P: ContentProvider> DagReader<P> {
             name = ?manifest.name,
             size = manifest.total_size,
             chunks = manifest.chunk_count(),
-            "Reading all content"
+            batch_size = self.config.batch_size,
+            "Reading all content with batch fetching"
         );
 
         // Get all chunk CIDs
-        let tree_reader = TreeReader::with_provider(&self.provider);
+        let tree_reader = TreeReader::with(&self.provider, self.config.batch_size);
         let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
 
-        // Fetch and concatenate chunks
+        // Fetch all chunks in batches
+        let blocks = self.fetch_blocks_batched(&chunk_cids).await?;
+
+        // Concatenate content
         let mut content = Vec::with_capacity(manifest.total_size as usize);
-
-        for (i, cid) in chunk_cids.iter().enumerate() {
-            let block = self
-                .provider
-                .get_block(cid)
-                .await?
-                .ok_or_else(|| DagError::ChunkNotFound(cid.clone()))?;
-
+        for block in blocks {
             content.extend_from_slice(block.data());
-
-            if (i + 1) % 1000 == 0 {
-                debug!(chunks_read = i + 1, bytes = content.len(), "Read progress");
-            }
         }
 
         info!(
@@ -588,7 +684,7 @@ impl<P: ContentProvider> DagReader<P> {
         );
 
         // Get all chunk CIDs (we need them to calculate offsets)
-        let tree_reader = TreeReader::with_provider(&self.provider);
+        let tree_reader = TreeReader::with(&self.provider, self.config.batch_size);
         let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
 
         let mut result = Vec::with_capacity(range_size);
@@ -656,28 +752,24 @@ impl<P: ContentProvider> DagReader<P> {
 
         debug!(
             chunks = manifest.chunk_count(),
-            "Collecting chunks asynchronously"
+            batch_size = self.config.batch_size,
+            "Collecting chunks with batch fetching"
         );
 
-        let tree_reader = TreeReader::with_provider(&self.provider);
+        let tree_reader = TreeReader::with(&self.provider, self.config.batch_size);
         let chunk_cids = tree_reader.get_all_chunks(&manifest).await?;
 
-        let mut chunks = Vec::with_capacity(chunk_cids.len());
+        // Fetch all chunks in batches
+        let blocks = self.fetch_blocks_batched(&chunk_cids).await?;
 
-        for cid in chunk_cids.iter() {
-            let block = self
-                .provider
-                .get_block(cid)
-                .await?
-                .ok_or_else(|| DagError::ChunkNotFound(cid.clone()))?;
-
-            chunks.push(block.data().to_vec());
-        }
+        // Convert to Vec<Vec<u8>>
+        let chunks: Vec<Vec<u8>> = blocks.into_iter().map(|b| b.data().to_vec()).collect();
 
         info!(
             chunks_collected = chunks.len(),
             "Chunks collected successfully"
         );
+
         Ok(chunks)
     }
 
@@ -1351,5 +1443,137 @@ mod tests {
         let dag_err: DagError = provider_err.into();
 
         assert!(matches!(dag_err, DagError::Provider(_)));
+    }
+
+    // ========================================================================
+    // Batch Fetching Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_read_all_uses_batch_fetching() {
+        let (store, _dir) = create_test_store();
+
+        // Create content large enough to need multiple chunks
+        let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        // Read with small batch size to test batching logic
+        let config = DagReaderConfig::with_batch_size(5);
+        let reader = DagReader::with(LocalProvider::new(store.clone()), config);
+
+        let read_content = reader.read_all(&result.root_cid).await.unwrap();
+        assert_eq!(read_content, content);
+    }
+
+    #[tokio::test]
+    async fn test_collect_chunks_uses_batch_fetching() {
+        let (store, _dir) = create_test_store();
+
+        let content: Vec<u8> = (0..50_000).map(|i| (i % 256) as u8).collect();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        // Small batch size
+        let config = DagReaderConfig::with_batch_size(3);
+        let reader = DagReader::with(LocalProvider::new(store.clone()), config);
+
+        let chunks = reader.collect_chunks(&result.root_cid).await.unwrap();
+
+        // Verify chunks reconstruct content
+        let reconstructed: Vec<u8> = chunks.into_iter().flatten().collect();
+        assert_eq!(reconstructed, content);
+    }
+
+    #[tokio::test]
+    async fn test_read_range_with_batch_fetching() {
+        let (store, _dir) = create_test_store();
+
+        let content: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        let config = DagReaderConfig::with_batch_size(5);
+        let reader = DagReader::with(LocalProvider::new(store.clone()), config);
+
+        // Read a range in the middle
+        let range_start = 10_000;
+        let range_end = 20_000;
+        let range_content = reader
+            .read_range(&result.root_cid, range_start..range_end)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            range_content,
+            &content[range_start as usize..range_end as usize]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_size_one_works() {
+        let (store, _dir) = create_test_store();
+
+        let content = b"test batch size one".to_vec();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        // Batch size of 1 (sequential)
+        let config = DagReaderConfig::with_batch_size(1);
+        let reader = DagReader::with(LocalProvider::new(store.clone()), config);
+
+        let read_content = reader.read_all(&result.root_cid).await.unwrap();
+        assert_eq!(read_content, content);
+    }
+
+    #[tokio::test]
+    async fn test_large_batch_size() {
+        let (store, _dir) = create_test_store();
+
+        let content: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+
+        let chunker = create_test_chunker();
+        let builder = DagBuilder::new(store.clone(), chunker);
+
+        let metadata = DagMetadata::new("did:key:test")
+            .name("test.txt")
+            .content_type("text/plain");
+
+        let result = builder.build_from_bytes(&content, metadata).unwrap();
+
+        // Batch size larger than chunk count
+        let config = DagReaderConfig::with_batch_size(1000);
+        let reader = DagReader::with(LocalProvider::new(store.clone()), config);
+
+        let read_content = reader.read_all(&result.root_cid).await.unwrap();
+        assert_eq!(read_content, content);
     }
 }
