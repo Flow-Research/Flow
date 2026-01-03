@@ -59,11 +59,21 @@ export interface SpaceStatus {
   last_indexed: string | null;
   files_indexed: number;
   chunks_stored: number;
+  files_failed: number;
+  last_error: string | null;
 }
 
 export interface QueryResponse {
   status: string;
   response: string;
+}
+
+export interface EntityEdge {
+  id: number;
+  edge_type: string;
+  source_id?: number;
+  target_id?: number;
+  direction: 'incoming' | 'outgoing';
 }
 
 export interface Entity {
@@ -73,6 +83,7 @@ export interface Entity {
   entity_type: string;
   properties: Record<string, unknown>;
   created_at: string;
+  edges?: EntityEdge[];
 }
 
 export const api = {
