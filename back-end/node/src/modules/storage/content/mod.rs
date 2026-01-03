@@ -6,6 +6,7 @@ mod dag;
 mod error;
 mod manifest;
 mod provider;
+mod service;
 
 pub use block::Block;
 pub use block_store::{BlockStore, BlockStoreConfig, BlockStoreStats};
@@ -27,4 +28,9 @@ pub use manifest::{
 
 pub use provider::{
     ContentProvider, ContentProviderError, LocalProvider, NetworkProvider, NetworkProviderConfig,
+};
+
+pub use service::{
+    AnnouncementOutcome, AnnouncementResult, ContentService, ContentServiceConfig,
+    ContentServiceError, ContentServiceResult, PublishResult, PublishStats,
 };

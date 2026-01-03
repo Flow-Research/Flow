@@ -340,6 +340,10 @@ impl TwoNodeTestConfig {
     pub fn dag_network() -> Self {
         Self::new(9400, 9401)
     }
+
+    pub fn content_service() -> Self {
+        Self::new(9600, 9601)
+    }
 }
 
 /// Context for two-node test setup
