@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, Method, StatusCode},
     response::Json,
     routing::{get, post},
@@ -66,11 +66,34 @@ pub fn build_router(app_state: AppState, config: &Config) -> Router {
             format!("{}/webauthn/finish_authentication", api_base).as_str(),
             post(finish_webauthn_authentication),
         )
-        .route(format!("{}/spaces", api_base).as_str(), post(create_space))
+        .route(
+            format!("{}/spaces", api_base).as_str(),
+            get(list_spaces).post(create_space),
+        )
         .route(format!("{}/health", api_base).as_str(), get(health_check))
         .route(
             format!("{}/spaces/search", api_base).as_str(),
             get(query_space),
+        )
+        .route(
+            format!("{}/spaces/:key", api_base).as_str(),
+            get(get_space).delete(delete_space),
+        )
+        .route(
+            format!("{}/spaces/:key/status", api_base).as_str(),
+            get(get_space_status),
+        )
+        .route(
+            format!("{}/spaces/:key/reindex", api_base).as_str(),
+            post(reindex_space),
+        )
+        .route(
+            format!("{}/spaces/:key/entities", api_base).as_str(),
+            get(list_entities),
+        )
+        .route(
+            format!("{}/spaces/:key/entities/:id", api_base).as_str(),
+            get(get_entity),
         )
         .route(
             format!("{}/network/status", api_base).as_str(),
@@ -286,6 +309,34 @@ async fn get_user_by_device_id(
     Ok(user)
 }
 
+async fn list_spaces(
+    State(app_state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::space;
+    use sea_orm::EntityTrait;
+
+    let node = app_state.node.read().await;
+
+    let spaces = space::Entity::find()
+        .all(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let space_list: Vec<Value> = spaces
+        .into_iter()
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "key": s.key,
+                "location": s.location,
+                "time_created": s.time_created.to_string()
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(space_list)))
+}
+
 async fn create_space(
     State(app_state): State<AppState>,
     Json(payload): Json<Value>,
@@ -297,6 +348,220 @@ async fn create_space(
         Ok(_) => Ok(Json(json!({"status": "success"}))),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
+}
+
+async fn get_space(
+    State(app_state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::space;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let node = app_state.node.read().await;
+
+    let space = space::Entity::find()
+        .filter(space::Column::Key.eq(&key))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+
+    Ok(Json(json!({
+        "id": space.id,
+        "key": space.key,
+        "location": space.location,
+        "time_created": space.time_created.to_string()
+    })))
+}
+
+async fn delete_space(
+    State(app_state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::space;
+    use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
+
+    let node = app_state.node.read().await;
+
+    let space = space::Entity::find()
+        .filter(space::Column::Key.eq(&key))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+
+    space
+        .delete(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    info!(space_key = %key, "Space deleted");
+
+    Ok(Json(json!({"status": "success", "message": format!("Space {} deleted", key)})))
+}
+
+async fn get_space_status(
+    State(app_state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::{space, space_index_status};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let node = app_state.node.read().await;
+
+    let space = space::Entity::find()
+        .filter(space::Column::Key.eq(&key))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+
+    let status = space_index_status::Entity::find()
+        .filter(space_index_status::Column::SpaceId.eq(space.id))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match status {
+        Some(s) => Ok(Json(json!({
+            "indexing_in_progress": s.indexing_in_progress.unwrap_or(false),
+            "last_indexed": s.last_indexed.map(|t| t.to_string()),
+            "files_indexed": s.files_indexed.unwrap_or(0),
+            "chunks_stored": s.chunks_stored.unwrap_or(0),
+            "files_failed": s.files_failed.unwrap_or(0),
+            "last_error": s.last_error
+        }))),
+        None => Ok(Json(json!({
+            "indexing_in_progress": false,
+            "last_indexed": null,
+            "files_indexed": 0,
+            "chunks_stored": 0,
+            "files_failed": 0,
+            "last_error": null
+        }))),
+    }
+}
+
+async fn reindex_space(
+    State(app_state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let node = app_state.node.read().await;
+
+    node.pipeline_manager
+        .index_space(&key)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    info!(space_key = %key, "Space reindexing started");
+
+    Ok(Json(json!({"status": "success", "message": format!("Reindexing started for space {}", key)})))
+}
+
+async fn list_entities(
+    State(app_state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::{kg_entity, space};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+
+    let node = app_state.node.read().await;
+
+    let space = space::Entity::find()
+        .filter(space::Column::Key.eq(&key))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+
+    let entities = kg_entity::Entity::find()
+        .filter(kg_entity::Column::SpaceId.eq(space.id))
+        .order_by_desc(kg_entity::Column::CreatedAt)
+        .all(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let entity_list: Vec<Value> = entities
+        .into_iter()
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "cid": e.cid,
+                "name": e.name,
+                "entity_type": e.entity_type,
+                "properties": e.properties,
+                "created_at": e.created_at.to_string()
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(entity_list)))
+}
+
+async fn get_entity(
+    State(app_state): State<AppState>,
+    Path((key, id)): Path<(String, i32)>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use entity::{kg_edge, kg_entity, space};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let node = app_state.node.read().await;
+
+    let space = space::Entity::find()
+        .filter(space::Column::Key.eq(&key))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+
+    let entity = kg_entity::Entity::find_by_id(id)
+        .filter(kg_entity::Column::SpaceId.eq(space.id))
+        .one(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, format!("Entity not found: {}", id)))?;
+
+    let outgoing_edges = kg_edge::Entity::find()
+        .filter(kg_edge::Column::SourceId.eq(id))
+        .all(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let incoming_edges = kg_edge::Entity::find()
+        .filter(kg_edge::Column::TargetId.eq(id))
+        .all(&node.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let edges: Vec<Value> = outgoing_edges
+        .into_iter()
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "edge_type": e.edge_type,
+                "target_id": e.target_id,
+                "direction": "outgoing"
+            })
+        })
+        .chain(incoming_edges.into_iter().map(|e| {
+            json!({
+                "id": e.id,
+                "edge_type": e.edge_type,
+                "source_id": e.source_id,
+                "direction": "incoming"
+            })
+        }))
+        .collect();
+
+    Ok(Json(json!({
+        "id": entity.id,
+        "cid": entity.cid,
+        "name": entity.name,
+        "entity_type": entity.entity_type,
+        "properties": entity.properties,
+        "created_at": entity.created_at.to_string(),
+        "edges": edges
+    })))
 }
 
 async fn query_space(
