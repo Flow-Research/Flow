@@ -1144,6 +1144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4969,6 +4978,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "instant-distance"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c619cdaa30bb84088963968bee12a45ea5fbbf355f2c021bcd15589f5ca494a"
+dependencies = [
+ "num_cpus",
+ "ordered-float 3.9.2",
+ "parking_lot 0.12.5",
+ "rand 0.8.5",
+ "rayon",
+]
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7419,6 +7441,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.6",
  "base64 0.22.1",
+ "bincode",
  "candle-core",
  "candle-nn",
  "candle-transformers",
@@ -7439,6 +7462,7 @@ dependencies = [
  "hex",
  "hf-hub",
  "http-body-util",
+ "instant-distance",
  "jsonwebtoken",
  "libp2p",
  "lingua",
