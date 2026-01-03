@@ -5,6 +5,7 @@ use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
+use node::bootstrap::config::{Config, CorsConfig, DbConfig, JwtConfig, ServerConfig};
 use node::bootstrap::init::NodeData;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use node::modules::ai::config::IndexingConfig;
@@ -121,12 +122,46 @@ pub async fn setup_test_server() -> TestServer {
     let (node, temp) = setup_test_node().await;
     let node_clone = node.clone();
     let app_state = AppState::new(node);
-    let router = rest::build_router(app_state);
+    let config = create_test_config(&temp);
+    let router = rest::build_router(app_state, &config);
 
     TestServer {
         router,
         node: node_clone,
         temp,
+    }
+}
+
+fn create_test_config(temp: &TempDir) -> Config {
+    Config {
+        db: DbConfig {
+            url: format!("sqlite://{}?mode=rwc", temp.path().join("test.db").display()),
+            max_connections: 50,
+            min_connections: 1,
+            connect_timeout: Duration::from_secs(8),
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(1800),
+            logging_enabled: false,
+        },
+        kv: KvConfig {
+            path: temp.path().join("kv"),
+            enable_compression: true,
+            max_open_files: 100,
+            write_buffer_size: 64 * 1024 * 1024,
+        },
+        server: ServerConfig {
+            rest_port: 8080,
+            websocket_port: 8081,
+            host: "0.0.0.0".to_string(),
+        },
+        jwt: JwtConfig {
+            secret: "test-secret-key".to_string(),
+            expiry_hours: 1,
+        },
+        cors: CorsConfig {
+            allowed_origins: vec!["http://localhost:3000".to_string()],
+            allow_credentials: true,
+        },
     }
 }
 
