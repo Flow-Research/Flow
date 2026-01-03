@@ -491,7 +491,6 @@ impl ContentService {
     async fn announce(&self, cid: &ContentId, manifest: &DocumentManifest) -> AnnouncementResult {
         let mut result = AnnouncementResult::default();
 
-        // Check if network is running
         if !self.network.is_running().await {
             warn!("Network not running, skipping announcements");
             result.dht = AnnouncementOutcome::NotAttempted;
@@ -499,17 +498,22 @@ impl ContentService {
             return result;
         }
 
-        // DHT announcement
         if self.config.announce_dht {
             match self.network.start_providing(cid.clone()).await {
                 Ok(provider_result) => {
                     let query_id = format!("{:?}", provider_result.query_id);
-                    debug!(query_id = %query_id, "DHT announcement initiated");
+                    debug!(query_id = %query_id, "DHT announcement for root CID initiated");
                     result.dht = AnnouncementOutcome::Success(query_id);
                 }
                 Err(e) => {
                     warn!(error = %e, "DHT announcement failed");
                     result.dht = AnnouncementOutcome::Failed(e.to_string());
+                }
+            }
+
+            for child_cid in &manifest.children {
+                if let Err(e) = self.network.start_providing(child_cid.clone()).await {
+                    debug!(cid = %child_cid, error = %e, "Failed to announce chunk CID");
                 }
             }
         } else {

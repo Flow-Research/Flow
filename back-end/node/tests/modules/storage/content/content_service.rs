@@ -3,7 +3,7 @@
 use node::modules::network::gossipsub::Topic;
 use node::modules::network::manager::NetworkManager;
 use node::modules::storage::content::{
-    AnnouncementOutcome, BlockStore, BlockStoreConfig, ContentId, ContentService,
+    AnnouncementOutcome, BlockStore, BlockStoreConfig, ChunkingConfig, ContentId, ContentService,
     ContentServiceConfig, DagMetadata,
 };
 use serial_test::serial;
@@ -187,18 +187,31 @@ async fn test_content_service_is_local_false() {
 #[tokio::test]
 #[serial]
 async fn test_content_service_publish_large_content() {
-    let (service, _temp_dir) = setup_local_service("cs_large_content").await;
+    let temp_dir = TempDir::new().unwrap();
+    setup_test_env(&temp_dir, "cs_large_content");
 
-    // Create large content (1MB)
+    let store_config = BlockStoreConfig {
+        db_path: temp_dir.path().join("blocks"),
+        ..Default::default()
+    };
+    let store = Arc::new(BlockStore::new(store_config).unwrap());
+
+    let node_data = create_test_node_data();
+    let network = Arc::new(NetworkManager::new(&node_data).await.unwrap());
+
+    let config = ContentServiceConfig {
+        chunking_config: ChunkingConfig::small(),
+        ..ContentServiceConfig::local_only()
+    };
+    let service = ContentService::new(store, network, config);
+
     let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
     let metadata = DagMetadata::new("did:key:test").name("large.bin");
 
     let result = service.publish(&content, metadata).await.unwrap();
 
-    // Should have multiple chunks
     assert!(result.stats.chunk_count > 1);
 
-    // Fetch and verify
     let fetched = service.fetch(&result.root_cid).await.unwrap();
     assert_eq!(fetched, content);
 }
