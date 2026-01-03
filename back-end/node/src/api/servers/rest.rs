@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     api::{
-        dto::{DialPeerRequest, NetworkStatusResponse, PeerInfoResponse, PeersResponse},
+        dto::{ApiError, DialPeerRequest, NetworkStatusResponse, PeerInfoResponse, PeersResponse},
         servers::app_state::AppState,
     },
     bootstrap::config::Config,
@@ -353,7 +353,7 @@ async fn create_space(
 async fn get_space(
     State(app_state): State<AppState>,
     Path(key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     use entity::space;
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -362,9 +362,8 @@ async fn get_space(
     let space = space::Entity::find()
         .filter(space::Column::Key.eq(&key))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Space '{}'", key)))?;
 
     Ok(Json(json!({
         "id": space.id,
@@ -377,7 +376,7 @@ async fn get_space(
 async fn delete_space(
     State(app_state): State<AppState>,
     Path(key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     use entity::space;
     use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
 
@@ -386,24 +385,20 @@ async fn delete_space(
     let space = space::Entity::find()
         .filter(space::Column::Key.eq(&key))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Space '{}'", key)))?;
 
-    space
-        .delete(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    space.delete(&node.db).await?;
 
     info!(space_key = %key, "Space deleted");
 
-    Ok(Json(json!({"status": "success", "message": format!("Space {} deleted", key)})))
+    Ok(Json(json!({"success": true, "message": format!("Space {} deleted", key)})))
 }
 
 async fn get_space_status(
     State(app_state): State<AppState>,
     Path(key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     use entity::{space, space_index_status};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -412,15 +407,13 @@ async fn get_space_status(
     let space = space::Entity::find()
         .filter(space::Column::Key.eq(&key))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Space '{}'", key)))?;
 
     let status = space_index_status::Entity::find()
         .filter(space_index_status::Column::SpaceId.eq(space.id))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await?;
 
     match status {
         Some(s) => Ok(Json(json!({
@@ -445,23 +438,23 @@ async fn get_space_status(
 async fn reindex_space(
     State(app_state): State<AppState>,
     Path(key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let node = app_state.node.read().await;
 
     node.pipeline_manager
         .index_space(&key)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     info!(space_key = %key, "Space reindexing started");
 
-    Ok(Json(json!({"status": "success", "message": format!("Reindexing started for space {}", key)})))
+    Ok(Json(json!({"success": true, "message": format!("Reindexing started for space {}", key)})))
 }
 
 async fn list_entities(
     State(app_state): State<AppState>,
     Path(key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     use entity::{kg_entity, space};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
@@ -470,16 +463,14 @@ async fn list_entities(
     let space = space::Entity::find()
         .filter(space::Column::Key.eq(&key))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Space '{}'", key)))?;
 
     let entities = kg_entity::Entity::find()
         .filter(kg_entity::Column::SpaceId.eq(space.id))
         .order_by_desc(kg_entity::Column::CreatedAt)
         .all(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await?;
 
     let entity_list: Vec<Value> = entities
         .into_iter()
@@ -501,7 +492,7 @@ async fn list_entities(
 async fn get_entity(
     State(app_state): State<AppState>,
     Path((key, id)): Path<(String, i32)>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     use entity::{kg_edge, kg_entity, space};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -510,28 +501,24 @@ async fn get_entity(
     let space = space::Entity::find()
         .filter(space::Column::Key.eq(&key))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Space not found: {}", key)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Space '{}'", key)))?;
 
     let entity = kg_entity::Entity::find_by_id(id)
         .filter(kg_entity::Column::SpaceId.eq(space.id))
         .one(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("Entity not found: {}", id)))?;
+        .await?
+        .ok_or_else(|| ApiError::not_found(&format!("Entity {}", id)))?;
 
     let outgoing_edges = kg_edge::Entity::find()
         .filter(kg_edge::Column::SourceId.eq(id))
         .all(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await?;
 
     let incoming_edges = kg_edge::Entity::find()
         .filter(kg_edge::Column::TargetId.eq(id))
         .all(&node.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await?;
 
     let edges: Vec<Value> = outgoing_edges
         .into_iter()
@@ -567,23 +554,25 @@ async fn get_entity(
 async fn query_space(
     State(app_state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let space_key = params
         .get("space_key")
-        .ok_or((StatusCode::BAD_REQUEST, "space_key is required".to_string()))?;
+        .ok_or_else(|| ApiError::validation("space_key is required"))?;
     let query = params
         .get("query")
-        .ok_or((StatusCode::BAD_REQUEST, "query is required".to_string()))?;
+        .ok_or_else(|| ApiError::validation("query is required"))?;
 
     let node = app_state.node.read().await;
 
-    match node.query_space(space_key, query).await {
-        Ok(response) => Ok(Json(json!({
-            "status": "success",
-            "response": response
-        }))),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
+    let response = node
+        .query_space(space_key, query)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    Ok(Json(json!({
+        "success": true,
+        "response": response
+    })))
 }
 
 async fn health_check() -> Json<Value> {
