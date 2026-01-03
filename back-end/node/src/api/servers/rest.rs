@@ -7,6 +7,7 @@ use crate::{
     },
     bootstrap::config::Config,
     modules::network::config::NetworkConfig,
+    modules::ssi::jwt,
 };
 use axum::{
     Router,
@@ -21,13 +22,16 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
-/// Build the router with all routes configured
-pub fn build_router(app_state: AppState) -> Router {
-    // Configure CORS
-    let cors = CorsLayer::new()
-        // Allow requests from these origins
-        .allow_origin(["http://localhost:3000".parse::<HeaderValue>().unwrap()])
-        // Allow these HTTP methods
+pub fn build_router(app_state: AppState, config: &Config) -> Router {
+    let origins: Vec<HeaderValue> = config
+        .cors
+        .allowed_origins
+        .iter()
+        .filter_map(|origin| origin.parse::<HeaderValue>().ok())
+        .collect();
+
+    let mut cors = CorsLayer::new()
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -35,10 +39,12 @@ pub fn build_router(app_state: AppState) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        // Allow headers
         .allow_headers(Any)
-        // Cache preflight requests for 1 hour
         .max_age(std::time::Duration::from_secs(3600));
+
+    if config.cors.allow_credentials {
+        cors = cors.allow_credentials(true);
+    }
 
     let api_base: &str = "/api/v1";
 
@@ -91,13 +97,17 @@ pub fn build_router(app_state: AppState) -> Router {
 }
 
 pub async fn start(app_state: &AppState, config: &Config) -> Result<(), AppError> {
-    let app = build_router(app_state.clone());
+    let app = build_router(app_state.clone(), config);
 
     let bind_addr = format!("0.0.0.0:{}", config.server.rest_port);
+    info!("Starting REST server on {}", &bind_addr);
+    info!(
+        "CORS allowed origins: {:?}",
+        config.cors.allowed_origins
+    );
+
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, app).await?;
-
-    info!("Rest Server up on addr: {}", &bind_addr);
 
     Ok(())
 }
@@ -222,14 +232,58 @@ async fn finish_webauthn_authentication(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
+    let device_id = &node.node_data.id;
+    let user = get_user_by_device_id(&node.db, device_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get user for device {}: {}", device_id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+
+    let token = jwt::generate_token(&user.did, device_id).map_err(|e| {
+        error!("Failed to generate JWT: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    info!(
+        "Authentication successful for user {} (DID: {})",
+        user.id, user.did
+    );
+
     Ok(Json(json!({
         "verified": true,
         "message": "Authentication successful",
+        "token": token,
+        "did": user.did,
         "counter": auth_result.counter(),
         "backup_state": auth_result.backup_state(),
         "backup_eligible": auth_result.backup_eligible(),
         "needs_update": auth_result.needs_update()
     })))
+}
+
+async fn get_user_by_device_id(
+    db: &sea_orm::DatabaseConnection,
+    device_id: &str,
+) -> Result<entity::user::Model, String> {
+    use entity::pass_key;
+    use entity::user;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let passkey = pass_key::Entity::find()
+        .filter(pass_key::Column::DeviceId.eq(device_id))
+        .one(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Passkey not found".to_string())?;
+
+    let user = user::Entity::find_by_id(passkey.user_id)
+        .one(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "User not found".to_string())?;
+
+    Ok(user)
 }
 
 async fn create_space(

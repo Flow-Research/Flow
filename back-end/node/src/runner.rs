@@ -5,6 +5,7 @@ use crate::modules::ai::config::IndexingConfig;
 use crate::modules::ai::pipeline_manager::PipelineManager;
 use crate::modules::network::config::NetworkConfig;
 use crate::modules::network::manager::NetworkManager;
+use crate::modules::ssi::jwt;
 use crate::modules::storage::{KvConfig, KvStore, RocksDbKvStore};
 use crate::{
     api::{
@@ -79,10 +80,13 @@ async fn init_infrastructure(config: &Config) -> Result<InfrastructureServices, 
 }
 
 async fn init_application_services(
-    _config: &Config,
+    config: &Config,
     db_conn: &DatabaseConnection,
 ) -> Result<ApplicationServices, AppError> {
     info!("Initializing application services...");
+
+    jwt::init_jwt_secret(&config.jwt.secret);
+    info!("JWT secret initialized");
 
     let auth_state = AuthState::from_env()?;
     let pipeline_manager = init_pipeline_manager(db_conn).await?;
