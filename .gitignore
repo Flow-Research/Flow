@@ -96,3 +96,9 @@ docs/_build/
 
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
+
+# QA artifacts - generated during testing
+qa/
+
+# Build-E2E state - workflow tracking
+.build-e2e-state.json
