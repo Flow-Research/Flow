@@ -1,0 +1,49 @@
+{
+  "component": "backend",
+  "language": "Rust",
+  "test_framework": "cargo test",
+  "timestamp": "2026-01-08T07:48:55Z",
+  "duration_seconds": 246.83,
+  "summary": {
+    "total": 550,
+    "passed": 548,
+    "failed": 2,
+    "ignored": 0,
+    "measured": 0
+  },
+  "pass_rate": 99.64,
+  "failures": [
+    {
+      "test_name": "api::rest::webauthn::authentication::test_finish_authentication_returns_counter",
+      "file": "node/tests/api/rest/webauthn/authentication.rs",
+      "line": 471,
+      "error_type": "assertion_failed",
+      "expected": 200,
+      "actual": 500,
+      "message": "assertion `left == right` failed"
+    },
+    {
+      "test_name": "api::rest::webauthn::authentication::test_finish_authentication_valid_payload",
+      "file": "node/tests/api/rest/webauthn/authentication.rs",
+      "line": 268,
+      "error_type": "assertion_failed",
+      "expected": 200,
+      "actual": 500,
+      "message": "assertion `left == right` failed: Authentication should succeed"
+    }
+  ],
+  "test_categories": {
+    "api_tests": {
+      "rest": 25,
+      "websocket": 5
+    },
+    "module_tests": {
+      "ssi": 40,
+      "network": 180,
+      "storage": 120,
+      "ai": 30
+    },
+    "integration_tests": 50,
+    "property_tests": 100
+  }
+}

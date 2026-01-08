@@ -17,8 +17,9 @@ use axum::{
     routing::{get, post},
 };
 use errors::AppError;
+use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN};
 use serde_json::{Value, json};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
@@ -39,7 +40,7 @@ pub fn build_router(app_state: AppState, config: &Config) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers(Any)
+        .allow_headers([ORIGIN, ACCEPT, CONTENT_TYPE, AUTHORIZATION])
         .max_age(std::time::Duration::from_secs(3600));
 
     if config.cors.allow_credentials {
@@ -76,23 +77,23 @@ pub fn build_router(app_state: AppState, config: &Config) -> Router {
             get(query_space),
         )
         .route(
-            format!("{}/spaces/:key", api_base).as_str(),
+            format!("{}/spaces/{{key}}", api_base).as_str(),
             get(get_space).delete(delete_space),
         )
         .route(
-            format!("{}/spaces/:key/status", api_base).as_str(),
+            format!("{}/spaces/{{key}}/status", api_base).as_str(),
             get(get_space_status),
         )
         .route(
-            format!("{}/spaces/:key/reindex", api_base).as_str(),
+            format!("{}/spaces/{{key}}/reindex", api_base).as_str(),
             post(reindex_space),
         )
         .route(
-            format!("{}/spaces/:key/entities", api_base).as_str(),
+            format!("{}/spaces/{{key}}/entities", api_base).as_str(),
             get(list_entities),
         )
         .route(
-            format!("{}/spaces/:key/entities/:id", api_base).as_str(),
+            format!("{}/spaces/{{key}}/entities/{{id}}", api_base).as_str(),
             get(get_entity),
         )
         .route(
@@ -124,10 +125,7 @@ pub async fn start(app_state: &AppState, config: &Config) -> Result<(), AppError
 
     let bind_addr = format!("0.0.0.0:{}", config.server.rest_port);
     info!("Starting REST server on {}", &bind_addr);
-    info!(
-        "CORS allowed origins: {:?}",
-        config.cors.allowed_origins
-    );
+    info!("CORS allowed origins: {:?}", config.cors.allowed_origins);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, app).await?;
@@ -392,7 +390,9 @@ async fn delete_space(
 
     info!(space_key = %key, "Space deleted");
 
-    Ok(Json(json!({"success": true, "message": format!("Space {} deleted", key)})))
+    Ok(Json(
+        json!({"success": true, "message": format!("Space {} deleted", key)}),
+    ))
 }
 
 async fn get_space_status(
@@ -448,7 +448,9 @@ async fn reindex_space(
 
     info!(space_key = %key, "Space reindexing started");
 
-    Ok(Json(json!({"success": true, "message": format!("Reindexing started for space {}", key)})))
+    Ok(Json(
+        json!({"success": true, "message": format!("Reindexing started for space {}", key)}),
+    ))
 }
 
 async fn list_entities(

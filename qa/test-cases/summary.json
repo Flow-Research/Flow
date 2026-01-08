@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-01-08T08:00:00Z",
+  "total_test_cases": 10,
+  "by_component": {
+    "backend": {
+      "existing_tests": 550,
+      "new_test_cases": 0,
+      "coverage_status": "good"
+    },
+    "frontend_web": {
+      "existing_tests": 0,
+      "new_test_cases": 10,
+      "coverage_status": "critical_gap"
+    },
+    "frontend_mobile": {
+      "existing_tests": 0,
+      "new_test_cases": 0,
+      "coverage_status": "deferred",
+      "note": "Mobile app is scaffolded but not MVP priority"
+    }
+  },
+  "by_type": {
+    "unit": 10,
+    "integration": 0,
+    "stress": 0,
+    "performance": 0
+  },
+  "by_priority": {
+    "high": 7,
+    "medium": 3,
+    "low": 0
+  },
+  "recommendations": [
+    "Install vitest in flow-web for frontend testing",
+    "Implement TC-FE-001 through TC-FE-007 (auth/routing) first",
+    "Add API mocking for integration tests"
+  ]
+}

@@ -123,6 +123,7 @@ pub async fn setup_test_server() -> TestServer {
     let node_clone = node.clone();
     let app_state = AppState::new(node);
     let config = create_test_config(&temp);
+    node::modules::ssi::jwt::init_jwt_secret(&config.jwt.secret);
     let router = rest::build_router(app_state, &config);
 
     TestServer {
