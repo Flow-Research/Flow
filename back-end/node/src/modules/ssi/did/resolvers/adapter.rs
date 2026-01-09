@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use chrono::Utc;
 use ssi::dids::{AnyDidMethod as SsiResolver, DID, DIDResolver as SsiDIDResolver};
 use std::time::Instant;
@@ -35,15 +34,6 @@ pub enum DidWebError {
 pub struct DidResolver {
     /// SSI's universal DID resolver (supports key, jwk, web, pkh, ethr, ion, tz)
     inner: SsiResolver,
-}
-
-#[async_trait]
-pub trait DidResolverTrait {
-    async fn resolve_did(
-        &self,
-        did: &str,
-        options: &ResolutionOptions,
-    ) -> Result<ResolutionResult, ResolutionError>;
 }
 
 impl DidResolver {
@@ -147,34 +137,9 @@ impl DidResolver {
                     registry_version: Some("HTTPS/1.1".to_string()),
                 }),
             },
-            "pkh" => Some(VdrInfo {
-                registry_type: "blockchain".to_string(),
-                registry_endpoint: None,
-                verified: false, // TODO: Would need blockchain verification
-                registry_proof: None,
-                registry_version: None,
-            }),
-            "ethr" => Some(VdrInfo {
-                registry_type: "ethereum".to_string(),
-                registry_endpoint: None,
-                verified: false,
-                registry_proof: None,
-                registry_version: None,
-            }),
-            "ion" => Some(VdrInfo {
-                registry_type: "bitcoin".to_string(),
-                registry_endpoint: None,
-                verified: false,
-                registry_proof: None,
-                registry_version: None,
-            }),
-            "tz" => Some(VdrInfo {
-                registry_type: "tezos".to_string(),
-                registry_endpoint: None,
-                verified: false,
-                registry_proof: None,
-                registry_version: None,
-            }),
+            // Methods without VDR verification implemented yet
+            // When implementing, add actual blockchain verification logic
+            "pkh" | "ethr" | "ion" | "tz" => None,
             _ => None,
         }
     }

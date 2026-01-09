@@ -8,6 +8,7 @@ mod m20251107_164027_add_failure_tracking_to_space_index_status;
 mod m20260103_180000_create_kg_entity;
 mod m20260103_180001_create_kg_edge;
 mod m20260103_180002_create_chunk;
+mod m20260110_000000_add_space_name;
 
 pub struct Migrator;
 
@@ -23,6 +24,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260103_180000_create_kg_entity::Migration),
             Box::new(m20260103_180001_create_kg_edge::Migration),
             Box::new(m20260103_180002_create_chunk::Migration),
+            Box::new(m20260110_000000_add_space_name::Migration),
         ]
     }
 }

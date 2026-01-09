@@ -268,6 +268,7 @@ mod tests {
         let model = space::ActiveModel {
             id: Set(id),
             key: Set(format!("test-space-{}", id)),
+            name: Set(Some(format!("Test Space {}", id))),
             location: Set("/tmp/test".to_string()),
             time_created: Set(chrono::Utc::now().into()),
         };

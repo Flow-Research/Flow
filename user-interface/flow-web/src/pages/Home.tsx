@@ -82,8 +82,12 @@ export function HomePage() {
             <Link to={`/spaces/${space.key}`} key={space.key} className="space-card">
               <div className="space-icon">📂</div>
               <div className="space-info">
-                <h3>{space.key}</h3>
-                <p className="space-location">{space.location}</p>
+                <h3 className="space-name" title={space.location}>
+                  {space.name ?? space.key.slice(0, 8)}
+                </h3>
+                <p className="space-location" title={space.location}>
+                  {space.location}
+                </p>
                 <p className="space-date">
                   Created {new Date(space.time_created).toLocaleDateString()}
                 </p>

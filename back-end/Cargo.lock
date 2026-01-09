@@ -7100,6 +7100,7 @@ name = "migration"
 version = "0.1.0"
 dependencies = [
  "sea-orm-migration",
+ "sha2 0.10.9",
  "tokio",
 ]
 

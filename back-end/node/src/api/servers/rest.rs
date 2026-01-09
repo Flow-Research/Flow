@@ -326,6 +326,7 @@ async fn list_spaces(
             json!({
                 "id": s.id,
                 "key": s.key,
+                "name": s.name,
                 "location": s.location,
                 "time_created": s.time_created.to_string()
             })
@@ -366,6 +367,7 @@ async fn get_space(
     Ok(Json(json!({
         "id": space.id,
         "key": space.key,
+        "name": space.name,
         "location": space.location,
         "time_created": space.time_created.to_string()
     })))

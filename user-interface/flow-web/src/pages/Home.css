@@ -103,10 +103,21 @@
   font-size: 2.5rem;
 }
 
+.space-info {
+  min-width: 0; /* Enable text truncation in flex child */
+}
+
 .space-info h3 {
   margin: 0 0 0.5rem;
   font-size: 1.125rem;
   color: #fff;
+}
+
+.space-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .space-location {
@@ -114,7 +125,10 @@
   font-size: 0.75rem;
   color: #888;
   font-family: monospace;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .space-date {

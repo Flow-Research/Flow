@@ -50,6 +50,7 @@ export interface AuthFinishResponse {
 export interface Space {
   id: number;
   key: string;
+  name: string | null;
   location: string;
   time_created: string;
 }
