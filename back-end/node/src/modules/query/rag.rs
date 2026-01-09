@@ -36,9 +36,9 @@ pub struct SourceCitation {
 
 pub struct QueryPipeline {
     semantic_search: SemanticSearch,
-    entity_store: Arc<EntityStore>,
+    _entity_store: Arc<EntityStore>,
     llm_model: String,
-    space_id: i32,
+    _space_id: i32,
 }
 
 impl QueryPipeline {
@@ -51,9 +51,9 @@ impl QueryPipeline {
     ) -> Self {
         Self {
             semantic_search: SemanticSearch::new(vector_index, db, embed_fn),
-            entity_store,
+            _entity_store: entity_store,
             llm_model: "llama3.1:8b".to_string(),
-            space_id,
+            _space_id: space_id,
         }
     }
 

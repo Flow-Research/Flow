@@ -73,8 +73,9 @@ pub struct Pipeline {
 
 impl Pipeline {
     fn llm_client(&self) -> integrations::ollama::Ollama {
+        // Use llama3.2:3b for faster metadata generation (~10-20x faster than llama3.1:8b)
         integrations::ollama::Ollama::default()
-            .with_default_prompt_model("llama3.1:8b")
+            .with_default_prompt_model("llama3.2:3b")
             .to_owned()
     }
 
@@ -281,8 +282,9 @@ impl Pipeline {
         let mut pipeline =
             indexing::Pipeline::from_loader(loader).with_concurrency(self.config.concurrency);
 
-        pipeline = self.add_caching(pipeline);
+        // IMPORTANT: Validation BEFORE caching so we don't cache invalid/skipped files
         pipeline = self.add_validation_filter(pipeline);
+        pipeline = self.add_caching(pipeline);
 
         // Add rate limiting
         if self.config.rate_limit_ms > 0 {
