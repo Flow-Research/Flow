@@ -506,100 +506,47 @@ impl NetworkManager {
 
     /// Get the number of connected peers
     pub async fn peer_count(&self) -> Result<usize, AppError> {
-        // Check if started
-        {
-            let handle_guard = self.event_loop_handle.lock().await;
-            if handle_guard.is_none() {
-                return Err(AppError::Network(
-                    "NetworkManager not started - call start() first".to_string(),
-                ));
-            }
-        }
-
-        let (tx, rx) = oneshot::channel();
-
-        self.command_tx
-            .send(NetworkCommand::GetPeerCount(tx))
-            .map_err(|_| AppError::Network("Failed to query peer count".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive peer count".to_string()))
+        self.send_command(NetworkCommand::GetPeerCount, "get peer count")
+            .await
     }
 
     /// Get list of all connected peers
     pub async fn connected_peers(&self) -> Result<Vec<PeerInfo>, AppError> {
-        self.ensure_started().await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::GetConnectedPeers(tx))
-            .map_err(|_| AppError::Network("Failed to query connected peers".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive connected peers".to_string()))
+        self.send_command(NetworkCommand::GetConnectedPeers, "get connected peers")
+            .await
     }
 
     /// Get information about a specific peer
     pub async fn peer_info(&self, peer_id: PeerId) -> Result<Option<PeerInfo>, AppError> {
-        self.ensure_started().await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::GetPeerInfo {
-                peer_id,
-                response: tx,
-            })
-            .map_err(|_| AppError::Network("Failed to query peer info".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive peer info".to_string()))
+        self.send_command(
+            |tx| NetworkCommand::GetPeerInfo { peer_id, response: tx },
+            "get peer info",
+        )
+        .await
     }
 
     /// Dial a peer at a specific address
     pub async fn dial_peer(&self, address: Multiaddr) -> Result<(), AppError> {
-        self.ensure_started().await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::DialPeer {
-                address,
-                response: tx,
-            })
-            .map_err(|_| AppError::Network("Failed to send dial command".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive dial response".to_string()))?
-            .map_err(|e| AppError::Network(e))
+        self.send_fallible_command(
+            |tx| NetworkCommand::DialPeer { address, response: tx },
+            "dial peer",
+        )
+        .await
     }
 
     /// Disconnect from a peer
     pub async fn disconnect_peer(&self, peer_id: PeerId) -> Result<(), AppError> {
-        self.ensure_started().await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::DisconnectPeer {
-                peer_id,
-                response: tx,
-            })
-            .map_err(|_| AppError::Network("Failed to send disconnect command".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive disconnect response".to_string()))?
-            .map_err(|e| AppError::Network(e))
+        self.send_fallible_command(
+            |tx| NetworkCommand::DisconnectPeer { peer_id, response: tx },
+            "disconnect peer",
+        )
+        .await
     }
 
     /// Get network statistics
     pub async fn network_stats(&self) -> Result<NetworkStats, AppError> {
-        self.ensure_started().await?;
-
-        let (tx, rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::GetNetworkStats(tx))
-            .map_err(|_| AppError::Network("Failed to query network stats".to_string()))?;
-
-        rx.await
-            .map_err(|_| AppError::Network("Failed to receive network stats".to_string()))
+        self.send_command(NetworkCommand::GetNetworkStats, "get network stats")
+            .await
     }
 
     /// Helper to ensure network is started before operations
@@ -613,17 +560,48 @@ impl NetworkManager {
         Ok(())
     }
 
+    /// Helper to send a command and await its response.
+    ///
+    /// Combines ensure_started + channel creation + send + await into one call.
+    /// Use this for simple request-response commands where the channel returns T directly.
+    ///
+    /// # Arguments
+    /// * `make_command` - Closure that takes a response sender and returns the command
+    /// * `action` - Description for error messages (e.g., "get peers", "dial")
+    async fn send_command<T, F>(&self, make_command: F, action: &str) -> Result<T, AppError>
+    where
+        F: FnOnce(oneshot::Sender<T>) -> NetworkCommand,
+    {
+        self.ensure_started().await?;
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(make_command(tx))
+            .map_err(|_| AppError::Network(format!("Failed to send {} command", action)))?;
+        rx.await
+            .map_err(|_| AppError::Network(format!("Failed to receive {} response", action)))
+    }
+
+    /// Helper for commands that return Result<T, String> through the channel.
+    ///
+    /// Like send_command, but for commands where the event loop can fail with a String error.
+    async fn send_fallible_command<T, F>(&self, make_command: F, action: &str) -> Result<T, AppError>
+    where
+        F: FnOnce(oneshot::Sender<Result<T, String>>) -> NetworkCommand,
+    {
+        self.ensure_started().await?;
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(make_command(tx))
+            .map_err(|_| AppError::Network(format!("Failed to send {} command", action)))?;
+        rx.await
+            .map_err(|_| AppError::Network(format!("Failed to receive {} response", action)))?
+            .map_err(AppError::Network)
+    }
+
     /// Get connection capacity status
     pub async fn connection_capacity(&self) -> Result<ConnectionCapacityStatus, AppError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(NetworkCommand::GetConnectionCapacity(response_tx))
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
+        self.send_command(NetworkCommand::GetConnectionCapacity, "get connection capacity")
             .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
     }
 
     /// Manually trigger bootstrap process
@@ -631,34 +609,14 @@ impl NetworkManager {
     /// Dials all bootstrap peers and initiates Kademlia bootstrap query.
     /// Useful after network reconnection or configuration changes.
     pub async fn trigger_bootstrap(&self) -> Result<BootstrapResult, AppError> {
-        self.ensure_started().await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(NetworkCommand::TriggerBootstrap {
-                response: response_tx,
-            })
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
+        self.send_command(|tx| NetworkCommand::TriggerBootstrap { response: tx }, "trigger bootstrap")
             .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
     }
 
     /// Get list of configured bootstrap peer IDs
     pub async fn bootstrap_peer_ids(&self) -> Result<Vec<PeerId>, AppError> {
-        self.ensure_started().await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(NetworkCommand::GetBootstrapPeerIds(response_tx))
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
+        self.send_command(NetworkCommand::GetBootstrapPeerIds, "get bootstrap peers")
             .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
     }
 
     /// Subscribe to a topic
@@ -723,20 +681,11 @@ impl NetworkManager {
 
     /// Publish a message to a topic
     pub async fn publish(&self, message: Message) -> Result<String, AppError> {
-        self.ensure_started().await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::Publish {
-                message,
-                response: response_tx,
-            })
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
-            .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))?
-            .map_err(|e| AppError::Network(e))
+        self.send_fallible_command(
+            |tx| NetworkCommand::Publish { message, response: tx },
+            "publish message",
+        )
+        .await
     }
 
     /// Publish a payload to a FlowTopic
@@ -764,16 +713,8 @@ impl NetworkManager {
 
     /// Get list of subscribed topics
     pub async fn subscribed_topics(&self) -> Result<Vec<String>, AppError> {
-        self.ensure_started().await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::GetSubscriptions(response_tx))
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
+        self.send_command(NetworkCommand::GetSubscriptions, "get subscriptions")
             .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
     }
 
     /// Get message router statistics
@@ -783,19 +724,12 @@ impl NetworkManager {
 
     /// Get mesh peers for a topic
     pub async fn mesh_peers(&self, topic: impl Into<String>) -> Result<Vec<PeerId>, AppError> {
-        self.ensure_started().await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-        self.command_tx
-            .send(NetworkCommand::GetMeshPeers {
-                topic: topic.into(),
-                response: response_tx,
-            })
-            .map_err(|e| AppError::Network(format!("Failed to send command: {}", e)))?;
-
-        response_rx
-            .await
-            .map_err(|e| AppError::Network(format!("Failed to receive response: {}", e)))
+        let topic = topic.into();
+        self.send_command(
+            |tx| NetworkCommand::GetMeshPeers { topic, response: tx },
+            "get mesh peers",
+        )
+        .await
     }
 
     /// Check if any subscribers exist for a topic

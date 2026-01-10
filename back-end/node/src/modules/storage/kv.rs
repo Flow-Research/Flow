@@ -1,3 +1,4 @@
+use crate::utils::env::{env_bool, env_i32, env_path, env_usize};
 use errors::AppError;
 use rocksdb::{DB, IteratorMode, Options};
 use std::{
@@ -29,32 +30,11 @@ impl Default for KvConfig {
 impl KvConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Self {
-        use std::env;
-
-        let path = env::var("KV_STORE_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp/flow-kv"));
-
-        let enable_compression = env::var("KV_ENABLE_COMPRESSION")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true);
-
-        let max_open_files = env::var("KV_MAX_OPEN_FILES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1000);
-
-        let write_buffer_size = env::var("KV_WRITE_BUFFER_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64 * 1024 * 1024); // 64MB
-
         Self {
-            path,
-            enable_compression,
-            max_open_files,
-            write_buffer_size,
+            path: env_path("KV_STORE_PATH", "/tmp/flow-kv"),
+            enable_compression: env_bool("KV_ENABLE_COMPRESSION", true),
+            max_open_files: env_i32("KV_MAX_OPEN_FILES", 1000),
+            write_buffer_size: env_usize("KV_WRITE_BUFFER_SIZE", 64 * 1024 * 1024),
         }
     }
 }

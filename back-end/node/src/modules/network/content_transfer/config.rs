@@ -1,5 +1,6 @@
 //! Configuration for content transfer protocol.
 
+use crate::utils::env::{env_bool, env_u32, env_u64, env_usize};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -34,25 +35,11 @@ impl ContentTransferConfig {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
         Self {
-            request_timeout_secs: std::env::var("CONTENT_TRANSFER_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30),
-            max_concurrent_requests: std::env::var("CONTENT_TRANSFER_MAX_CONCURRENT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(64),
-            max_retries: std::env::var("CONTENT_TRANSFER_MAX_RETRIES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
-            retry_delay_ms: std::env::var("CONTENT_TRANSFER_RETRY_DELAY_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1000),
-            enabled: std::env::var("CONTENT_TRANSFER_ENABLED")
-                .map(|s| s != "false" && s != "0")
-                .unwrap_or(true),
+            request_timeout_secs: env_u64("CONTENT_TRANSFER_TIMEOUT_SECS", 30),
+            max_concurrent_requests: env_usize("CONTENT_TRANSFER_MAX_CONCURRENT", 64),
+            max_retries: env_u32("CONTENT_TRANSFER_MAX_RETRIES", 3),
+            retry_delay_ms: env_u64("CONTENT_TRANSFER_RETRY_DELAY_MS", 1000),
+            enabled: env_bool("CONTENT_TRANSFER_ENABLED", true),
         }
     }
 

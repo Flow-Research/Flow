@@ -1,3 +1,4 @@
+use crate::utils::env::env_usize;
 use tracing::debug;
 
 /// Configuration for chunking algorithms.
@@ -76,20 +77,9 @@ impl ChunkingConfig {
     /// - `CHUNKING_TARGET_SIZE`: Target chunk size (default: 262144)
     /// - `CHUNKING_MAX_SIZE`: Maximum chunk size (default: 1048576)
     pub fn from_env() -> Self {
-        let min_size = std::env::var("CHUNKING_MIN_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64 * 1024);
-
-        let target_size = std::env::var("CHUNKING_TARGET_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(256 * 1024);
-
-        let max_size = std::env::var("CHUNKING_MAX_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1024 * 1024);
+        let min_size = env_usize("CHUNKING_MIN_SIZE", 64 * 1024);
+        let target_size = env_usize("CHUNKING_TARGET_SIZE", 256 * 1024);
+        let max_size = env_usize("CHUNKING_MAX_SIZE", 1024 * 1024);
 
         debug!(
             min_size = min_size,
