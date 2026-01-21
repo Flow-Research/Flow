@@ -165,7 +165,8 @@ impl ResultAggregator {
 
         for (source_id, source_results) in by_source {
             // Find min and max scores for this source
-            let (min_score, max_score) = source_results.iter().fold((f32::MAX, f32::MIN), |acc, r| {
+            // Note: Use INFINITY/NEG_INFINITY, not MAX/MIN (MIN is smallest positive float, not negative)
+            let (min_score, max_score) = source_results.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |acc, r| {
                 (acc.0.min(r.score), acc.1.max(r.score))
             });
 

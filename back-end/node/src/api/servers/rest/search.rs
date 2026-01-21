@@ -231,7 +231,9 @@ fn convert_response(response: DistributedSearchResponse) -> DistributedSearchRes
         network_count: response.network_count,
         peers_queried: response.peers_queried,
         peers_responded: response.peers_responded,
-        total_found: response.local_count + response.network_count + response.more_available,
+        total_found: response.local_count
+            .saturating_add(response.network_count)
+            .saturating_add(response.more_available),
         elapsed_ms: response.elapsed_ms,
     }
 }
