@@ -74,6 +74,9 @@ serde_ipld_dagcbor = "0.6.4"
 fastcdc = "3.2.1"
 serde_bytes = "0.11.19"
 http = "1.4.0"
+lru = "0.12"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+metrics = "0.24"
 
 [dev-dependencies]
 proptest = "1.9.0"

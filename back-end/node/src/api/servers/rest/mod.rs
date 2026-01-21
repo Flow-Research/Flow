@@ -95,6 +95,15 @@ pub fn build_router(app_state: AppState, config: &Config) -> Router {
         )
         // Search
         .route(&format!("{api}/search"), post(content::search))
+        // Distributed Search
+        .route(
+            &format!("{api}/search/distributed"),
+            post(search::distributed_search),
+        )
+        .route(
+            &format!("{api}/search/distributed/health"),
+            get(search::distributed_search_health),
+        )
         .with_state(app_state)
         .layer(cors)
 }

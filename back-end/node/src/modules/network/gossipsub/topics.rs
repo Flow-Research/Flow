@@ -30,6 +30,9 @@ pub enum Topic {
     /// Content publication announcements
     ContentAnnouncements,
 
+    /// Distributed search queries
+    SearchQueries,
+
     /// Custom topic
     Custom(String),
 }
@@ -48,6 +51,7 @@ impl Topic {
             Topic::ContentAnnouncements => {
                 format!("{}/content/announcements", TOPIC_PREFIX)
             }
+            Topic::SearchQueries => format!("{}/search", TOPIC_PREFIX),
             Topic::Custom(name) => format!("{}/custom/{}", TOPIC_PREFIX, name),
         }
     }
@@ -81,6 +85,7 @@ impl Topic {
             "/compute/offers" => Some(Topic::ComputeOffers),
             "/announcements" => Some(Topic::Announcements),
             "/content/announcements" => Some(Topic::ContentAnnouncements),
+            "/search" => Some(Topic::SearchQueries),
             s if s.starts_with("/custom/") => {
                 let name = s.strip_prefix("/custom/")?;
                 Some(Topic::Custom(name.to_string()))
@@ -182,6 +187,15 @@ mod tests {
         assert_eq!(
             Topic::from_topic_string("/flow/v1/content/announcements"),
             Some(Topic::ContentAnnouncements)
+        );
+    }
+
+    #[test]
+    fn test_search_queries_topic() {
+        assert_eq!(Topic::SearchQueries.to_topic_string(), "/flow/v1/search");
+        assert_eq!(
+            Topic::from_topic_string("/flow/v1/search"),
+            Some(Topic::SearchQueries)
         );
     }
 }
