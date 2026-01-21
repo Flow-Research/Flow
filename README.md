@@ -83,11 +83,34 @@ To get started, you need to install dependencies for the `back-end` and `user-in
 
 You can run commands (called "targets") on specific projects using the `nx` CLI from the root of the repository.
 
+#### Workspace Commands (`flow`)
+
+-   **Stop all services (backend, docker, frontend):**
+    ```bash
+    nx stop-all flow
+    ```
+
+-   **Start all services:**
+    ```bash
+    nx start-all flow
+    ```
+
+-   **Docker services only:**
+    ```bash
+    nx docker-up flow    # Start qdrant + redis
+    nx docker-down flow  # Stop qdrant + redis
+    ```
+
 #### Back-End Commands (`back-end`)
 
 -   **Run the node:**
     ```bash
     nx run-node back-end
+    ```
+
+-   **Stop the node:**
+    ```bash
+    nx stop back-end
     ```
 
 -   **Build the node for production:**
@@ -98,6 +121,13 @@ You can run commands (called "targets") on specific projects using the `nx` CLI 
 -   **Run tests:**
     ```bash
     nx test back-end
+    ```
+
+-   **Docker services (qdrant, redis):**
+    ```bash
+    nx docker-up back-end    # Start containers
+    nx docker-down back-end  # Stop containers
+    nx docker-logs back-end  # Tail container logs
     ```
 
 
@@ -126,6 +156,11 @@ You can run commands (called "targets") on specific projects using the `nx` CLI 
 -   **Build all UI applications (web, desktop):**
     ```bash
     nx build-all user-interface
+    ```
+
+-   **Stop all frontend processes:**
+    ```bash
+    nx stop user-interface
     ```
 
 

@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use crate::utils::env::{env_u64, env_bool, env_string, env_path};
 //!
 //! let port = env_u64("SERVER_PORT", 8080);

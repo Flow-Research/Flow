@@ -1,3 +1,4 @@
+pub mod api_service;
 mod block;
 mod block_store;
 pub mod chunking;

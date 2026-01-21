@@ -27,6 +27,34 @@
                 "command": "cargo run --bin node",
                 "cwd": "back-end"
             }
+        },
+        "stop": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "pkill -f 'cargo run --bin node' || pkill -f 'target/.*/node' || echo 'No running node process found'",
+                "cwd": "back-end"
+            }
+        },
+        "docker-up": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "docker-compose up -d",
+                "cwd": "back-end"
+            }
+        },
+        "docker-down": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "docker-compose down",
+                "cwd": "back-end"
+            }
+        },
+        "docker-logs": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "docker-compose logs -f",
+                "cwd": "back-end"
+            }
         }
     }
 }

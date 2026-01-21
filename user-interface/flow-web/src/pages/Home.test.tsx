@@ -38,8 +38,8 @@ describe('HomePage', () => {
 
     it('displays spaces when API returns data', async () => {
       const mockSpaces = [
-        { id: 1, key: 'project-docs', location: '/home/user/docs', time_created: '2024-01-15T10:00:00Z' },
-        { id: 2, key: 'notes', location: '/home/user/notes', time_created: '2024-01-16T11:00:00Z' },
+        { id: 1, key: 'project-docs', name: 'project-docs', location: '/home/user/docs', time_created: '2024-01-15T10:00:00Z' },
+        { id: 2, key: 'notes', name: 'notes', location: '/home/user/notes', time_created: '2024-01-16T11:00:00Z' },
       ];
 
       globalThis.fetch = vi.fn().mockResolvedValue({
@@ -144,7 +144,7 @@ describe('HomePage', () => {
 
     it('renders space cards as links', async () => {
       const mockSpaces = [
-        { id: 1, key: 'project-docs', location: '/home/user/docs', time_created: '2024-01-15T10:00:00Z' },
+        { id: 1, key: 'project-docs', name: 'project-docs', location: '/home/user/docs', time_created: '2024-01-15T10:00:00Z' },
       ];
 
       globalThis.fetch = vi.fn().mockResolvedValue({

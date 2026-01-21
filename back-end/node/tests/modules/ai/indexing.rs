@@ -162,12 +162,20 @@ fn test_file_loader_recursive() {
 }
 
 /// Test that .gitignore patterns are respected
+/// Note: The ignore crate requires a git repository for .gitignore to work
 #[test]
 fn test_file_loader_respects_gitignore() {
     let temp_dir = TempDir::new().unwrap();
     let dir_path = temp_dir.path();
 
-    // Create a .gitignore that ignores .log files
+    // Initialize a git repository - required for .gitignore to be respected
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir_path)
+        .output()
+        .expect("Failed to initialize git repo");
+
+    // Create a .gitignore that ignores .log files and ignored/ directory
     fs::write(dir_path.join(".gitignore"), "*.log\nignored/").unwrap();
 
     // Create files that should and shouldn't be ignored

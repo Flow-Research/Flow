@@ -29,6 +29,7 @@ The codebase has grown organically and there's a gut feeling that some areas may
   - **Iteration speed**: New features can be added faster
 - Produce actionable, prioritized recommendations
 - Scope findings into the build-e2e specification process for implementation
+- Look for refactoring that can be fone to clean up long code blocks and use well thought out and relevant design patterns. 
 
 ### Audit Scope
 

@@ -102,3 +102,9 @@ qa/
 
 # Build-E2E state - workflow tracking
 .build-e2e-state.json
+
+code-review/
+
+# Claude Code config (machine-specific paths)
+.mcp.json
+CLAUDE.md
