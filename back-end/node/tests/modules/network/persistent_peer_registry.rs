@@ -30,6 +30,8 @@ mod tests {
         PeerRegistryConfig {
             db_path: temp_dir.path().join("peer_registry"),
             flush_interval_secs: 1, // Short interval for testing
+            max_failures: 5,        // Purge after 5 consecutive failures
+            peer_ttl_secs: 7 * 24 * 60 * 60, // 7 days TTL
         }
     }
 
@@ -105,6 +107,8 @@ mod tests {
         let config = PeerRegistryConfig {
             db_path: temp_dir.path().join("nested/deep/path/peer_registry"),
             flush_interval_secs: 30,
+            max_failures: 5,
+            peer_ttl_secs: 7 * 24 * 60 * 60,
         };
 
         let registry = PersistentPeerRegistry::new(config.clone());

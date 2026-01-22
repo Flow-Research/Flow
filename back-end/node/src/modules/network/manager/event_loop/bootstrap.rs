@@ -22,6 +22,16 @@ impl NetworkEventLoop {
 
         self.bootstrap_initiated = true;
 
+        // Run maintenance to purge stale peers from previous sessions
+        let (failed_purged, expired_purged) = self.peer_registry.run_maintenance();
+        if failed_purged > 0 || expired_purged > 0 {
+            info!(
+                failed_purged = failed_purged,
+                expired_purged = expired_purged,
+                "Purged stale peers during bootstrap"
+            );
+        }
+
         info!(
             peer_count = self.bootstrap_peer_ids.len(),
             auto_dial = self.bootstrap_config.auto_dial,

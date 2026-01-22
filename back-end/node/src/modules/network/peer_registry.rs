@@ -223,6 +223,9 @@ pub struct PeerRegistry {
     /// Track reconnection counts across disconnections
     reconnection_counts: HashMap<PeerId, u32>,
 
+    /// Track consecutive connection failures per peer
+    failure_counts: HashMap<PeerId, u32>,
+
     /// When the registry was created
     started_at: Instant,
 
@@ -239,6 +242,7 @@ impl PeerRegistry {
             peers: HashMap::new(),
             known_peers: HashMap::new(),
             reconnection_counts: HashMap::new(),
+            failure_counts: HashMap::new(),
             started_at: Instant::now(),
             total_connections: 0,
             total_failures: 0,
@@ -391,6 +395,9 @@ impl PeerRegistry {
                 }
             })
             .or_insert_with(|| vec![address]);
+
+        // Reset failure count on successful connection
+        self.reset_peer_failures(&peer_id);
     }
 
     /// Record a connection closure
@@ -461,6 +468,84 @@ impl PeerRegistry {
     /// Get reconnection count for a peer
     pub fn get_reconnection_count(&self, peer_id: &PeerId) -> u32 {
         self.reconnection_counts.get(peer_id).copied().unwrap_or(0)
+    }
+
+    /// Record a connection failure for a specific peer
+    ///
+    /// Returns the new failure count for this peer
+    pub fn record_peer_failure(&mut self, peer_id: &PeerId) -> u32 {
+        let count = self.failure_counts.entry(*peer_id).or_insert(0);
+        *count += 1;
+        debug!(
+            peer_id = %peer_id,
+            failure_count = *count,
+            "Recorded connection failure"
+        );
+        *count
+    }
+
+    /// Reset failure count for a peer (called on successful connection)
+    pub fn reset_peer_failures(&mut self, peer_id: &PeerId) {
+        if self.failure_counts.remove(peer_id).is_some() {
+            debug!(peer_id = %peer_id, "Reset failure count after successful connection");
+        }
+    }
+
+    /// Get the current failure count for a peer
+    pub fn get_failure_count(&self, peer_id: &PeerId) -> u32 {
+        self.failure_counts.get(peer_id).copied().unwrap_or(0)
+    }
+
+    /// Bulk load failure counts from persistent storage
+    pub fn bulk_load_failure_counts(&mut self, counts: HashMap<PeerId, u32>) {
+        let count = counts.len();
+        debug!(count = count, "Bulk loading failure counts into registry");
+
+        for (peer_id, failure_count) in counts {
+            if failure_count > 0 {
+                self.failure_counts.insert(peer_id, failure_count);
+            }
+        }
+
+        info!(
+            loaded_counts = count,
+            total_tracked = self.failure_counts.len(),
+            "Bulk loaded failure counts into registry"
+        );
+    }
+
+    /// Get all failure counts (for persistence)
+    pub fn get_all_failure_counts(&self) -> &HashMap<PeerId, u32> {
+        &self.failure_counts
+    }
+
+    /// Remove a known peer completely (used when purging stale peers)
+    ///
+    /// Removes from known_peers, failure_counts, and reconnection_counts
+    pub fn remove_known_peer(&mut self, peer_id: &PeerId) {
+        self.known_peers.remove(peer_id);
+        self.failure_counts.remove(peer_id);
+        self.reconnection_counts.remove(peer_id);
+        info!(peer_id = %peer_id, "Removed stale peer from registry");
+    }
+
+    /// Check if peer should be purged based on failure count
+    pub fn should_purge_peer(&self, peer_id: &PeerId, max_failures: u32) -> bool {
+        self.get_failure_count(peer_id) >= max_failures
+    }
+
+    /// Get list of peers that exceed the failure threshold
+    pub fn get_stale_peers(&self, max_failures: u32) -> Vec<PeerId> {
+        self.failure_counts
+            .iter()
+            .filter(|&(_, count)| *count >= max_failures)
+            .map(|(&peer_id, _)| peer_id)
+            .collect()
+    }
+
+    /// Get all known peer IDs (for iteration during purge)
+    pub fn get_known_peer_ids(&self) -> Vec<PeerId> {
+        self.known_peers.keys().copied().collect()
     }
 }
 

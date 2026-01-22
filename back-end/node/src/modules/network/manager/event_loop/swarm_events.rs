@@ -164,6 +164,16 @@ impl NetworkEventLoop {
                 warn!("Outgoing connection error to {:?}: {}", peer_id, error);
                 if let Some(peer) = peer_id.as_ref() {
                     self.dialing_peers.remove(peer);
+
+                    // Track consecutive failures for this peer
+                    let should_purge = self.peer_registry.record_peer_failure(peer);
+                    if should_purge {
+                        info!(
+                            peer_id = %peer,
+                            "Purging peer due to excessive connection failures"
+                        );
+                        self.peer_registry.purge_stale_peer(peer);
+                    }
                 }
                 self.peer_registry.on_connection_failed(peer_id.as_ref());
             }
