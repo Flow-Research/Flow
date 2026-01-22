@@ -1,0 +1,122 @@
+.publish-button-container {
+  position: relative;
+  display: inline-block;
+}
+
+.publish-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: #646cff;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.publish-button:hover {
+  background: #535bf2;
+}
+
+.publish-button:focus {
+  outline: 2px solid #646cff;
+  outline-offset: 2px;
+}
+
+.publish-button--published {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+}
+
+.publish-button--published:hover {
+  background: #222;
+  border-color: #3a3a3a;
+}
+
+.publish-button__status-dot {
+  width: 8px;
+  height: 8px;
+  background: #22c55e;
+  border-radius: 50%;
+}
+
+.publish-button__icon {
+  flex-shrink: 0;
+}
+
+.publish-button__chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s;
+}
+
+.publish-button__chevron--open {
+  transform: rotate(180deg);
+}
+
+.publish-button__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+}
+
+.publish-button__dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  overflow: hidden;
+  animation: dropdown-in 0.15s ease;
+}
+
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.publish-button__dropdown-info {
+  padding: 0.75rem 1rem;
+  font-size: 0.75rem;
+  color: #666;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.publish-button__dropdown-item {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 0.875rem;
+  color: #888;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.publish-button__dropdown-item:hover {
+  background: #2a2a2a;
+  color: #fff;
+}
+
+.publish-button__dropdown-item--danger {
+  color: #ef4444;
+}
+
+.publish-button__dropdown-item--danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}

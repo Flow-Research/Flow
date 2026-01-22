@@ -5,6 +5,7 @@ import { AuthPage } from './pages/Auth';
 import { HomePage } from './pages/Home';
 import { SpacePage } from './pages/Space';
 import { SettingsPage } from './pages/Settings';
+import { SearchPage } from './pages/Search';
 import './App.css';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -82,6 +83,16 @@ function App() {
           <ProtectedRoute>
             <Layout>
               <SettingsPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/search"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SearchPage />
             </Layout>
           </ProtectedRoute>
         }

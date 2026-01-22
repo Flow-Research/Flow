@@ -3,12 +3,15 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
+import { NetworkProvider } from './contexts/NetworkContext';
 
 function renderApp(initialEntries: string[] = ['/']) {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
       <AuthProvider>
-        <App />
+        <NetworkProvider>
+          <App />
+        </NetworkProvider>
       </AuthProvider>
     </MemoryRouter>
   );

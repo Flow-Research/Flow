@@ -1,0 +1,114 @@
+.publish-confirm__description {
+  margin: 0 0 1.25rem;
+  color: #888;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.publish-confirm__description strong {
+  color: #fff;
+}
+
+.publish-confirm__info {
+  background: #0f0f0f;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.publish-confirm__info--warning {
+  background: rgba(245, 158, 11, 0.05);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.publish-confirm__info h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.publish-confirm__info--warning h3 {
+  color: #f59e0b;
+}
+
+.publish-confirm__info ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #888;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.publish-confirm__info ul strong {
+  color: #f59e0b;
+}
+
+.publish-confirm__error {
+  padding: 0.75rem 1rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #ef4444;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.publish-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.publish-confirm__btn {
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.publish-confirm__btn:focus {
+  outline: 2px solid #646cff;
+  outline-offset: 2px;
+}
+
+.publish-confirm__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.publish-confirm__btn--cancel {
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  color: #888;
+}
+
+.publish-confirm__btn--cancel:hover:not(:disabled) {
+  background: #2a2a2a;
+  color: #fff;
+}
+
+.publish-confirm__btn--confirm {
+  background: #646cff;
+  border: 1px solid #646cff;
+  color: #fff;
+}
+
+.publish-confirm__btn--confirm:hover:not(:disabled) {
+  background: #535bf2;
+  border-color: #535bf2;
+}
+
+.publish-confirm__btn--danger {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.publish-confirm__btn--danger:hover:not(:disabled) {
+  background: #dc2626;
+  border-color: #dc2626;
+}

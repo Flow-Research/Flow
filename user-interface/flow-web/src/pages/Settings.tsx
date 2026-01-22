@@ -1,4 +1,5 @@
 import { useAuth } from '../contexts/AuthContext';
+import { NetworkDetails } from '../components/network';
 import './Settings.css';
 
 export function SettingsPage() {
@@ -7,6 +8,11 @@ export function SettingsPage() {
   return (
     <div className="settings-page">
       <h1>Settings</h1>
+
+      <section className="settings-section">
+        <h2>Network</h2>
+        <NetworkDetails />
+      </section>
 
       <section className="settings-section">
         <h2>Account</h2>
@@ -36,8 +42,8 @@ export function SettingsPage() {
         <h2>Data</h2>
         <div className="settings-card">
           <p className="settings-info">
-            Your data is stored locally on your device. No data is sent to external
-            servers except when querying the local LLM for answers.
+            Your data is stored locally on your device. Published content is shared
+            with network peers to enable distributed search.
           </p>
         </div>
       </section>

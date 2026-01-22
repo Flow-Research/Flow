@@ -1,7 +1,20 @@
+import type {
+  DistributedSearchRequest,
+  DistributedSearchResponse,
+  SearchHealthResponse,
+  PublishResponse,
+  UnpublishResponse,
+  NetworkStatus,
+} from '../types/api';
+
 const API_BASE = 'http://localhost:8080/api/v1';
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string
+  ) {
     super(message);
     this.name = 'ApiError';
   }
@@ -53,6 +66,10 @@ export interface Space {
   name: string | null;
   location: string;
   time_created: string;
+  /** Whether space is published to network */
+  is_published?: boolean;
+  /** Timestamp when space was published */
+  published_at?: string | null;
 }
 
 export interface SpaceStatus {
@@ -145,5 +162,32 @@ export const api = {
 
   health: {
     check: () => request<{ status: string; timestamp: string }>('/health'),
+  },
+
+  search: {
+    /** Execute distributed search across local and network sources */
+    distributed: (req: DistributedSearchRequest) =>
+      request<DistributedSearchResponse>('/search/distributed', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+
+    /** Check distributed search system health */
+    health: () => request<SearchHealthResponse>('/search/distributed/health'),
+  },
+
+  publish: {
+    /** Publish a space to make it searchable by network peers */
+    publish: (key: string) =>
+      request<PublishResponse>(`/spaces/${key}/publish`, { method: 'POST' }),
+
+    /** Unpublish a space from the network */
+    unpublish: (key: string) =>
+      request<UnpublishResponse>(`/spaces/${key}/publish`, { method: 'DELETE' }),
+  },
+
+  network: {
+    /** Get network connection status */
+    status: () => request<NetworkStatus>('/network/status'),
   },
 };

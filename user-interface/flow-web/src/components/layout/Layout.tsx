@@ -1,6 +1,8 @@
 import { ReactNode } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useKeyboardShortcut } from '../../hooks/useKeyboardShortcut';
+import { NetworkIndicator } from '../network';
 import './Layout.css';
 
 interface LayoutProps {
@@ -10,6 +12,15 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const { isAuthenticated, logout, user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  // Global keyboard shortcut: Cmd/Ctrl + K to open search
+  useKeyboardShortcut({
+    key: 'k',
+    withModifier: true,
+    onTrigger: () => navigate('/search'),
+    enabled: isAuthenticated,
+  });
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -30,6 +41,10 @@ export function Layout({ children }: LayoutProps) {
                 <span className="nav-icon">🏠</span>
                 <span>Home</span>
               </Link>
+              <Link to="/search" className={`nav-item ${isActive('/search') ? 'active' : ''}`}>
+                <span className="nav-icon">🔍</span>
+                <span>Search</span>
+              </Link>
               <Link to="/settings" className={`nav-item ${isActive('/settings') ? 'active' : ''}`}>
                 <span className="nav-icon">⚙️</span>
                 <span>Settings</span>
@@ -45,6 +60,7 @@ export function Layout({ children }: LayoutProps) {
 
         {isAuthenticated && (
           <div className="sidebar-footer">
+            <NetworkIndicator showPeerCount />
             <div className="user-info">
               <span className="user-did" title={user?.did}>
                 {user?.did?.slice(0, 20)}...

@@ -1,0 +1,70 @@
+.network-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  color: #888;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.network-indicator--clickable {
+  cursor: pointer;
+}
+
+.network-indicator--clickable:hover {
+  background: #222;
+  border-color: #3a3a3a;
+}
+
+.network-indicator--clickable:focus {
+  outline: 2px solid #646cff;
+  outline-offset: 2px;
+}
+
+.network-indicator__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.network-indicator__dot--connected {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.network-indicator__dot--disconnected {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.network-indicator__dot--unknown {
+  background: #666;
+  animation: pulse-unknown 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-unknown {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.network-indicator__label {
+  white-space: nowrap;
+}
+
+.network-indicator--connected .network-indicator__label {
+  color: #4ade80;
+}
+
+.network-indicator--disconnected .network-indicator__label {
+  color: #f87171;
+}

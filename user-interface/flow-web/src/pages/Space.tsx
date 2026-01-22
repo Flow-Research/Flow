@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api, Space as SpaceType, SpaceStatus, Entity } from '../services/api';
+import { api, Space as SpaceType, Entity } from '../services/api';
+import { PublishButton, SyncStatus } from '../components/space';
+import { useSpaceStatus } from '../hooks/useSpaceStatus';
 import './Space.css';
 
 type Tab = 'chat' | 'entities';
@@ -8,8 +10,7 @@ type Tab = 'chat' | 'entities';
 export function SpacePage() {
   const { spaceKey } = useParams<{ spaceKey: string }>();
   const navigate = useNavigate();
-  const [_space, setSpace] = useState<SpaceType | null>(null);
-  const [status, setStatus] = useState<SpaceStatus | null>(null);
+  const [space, setSpace] = useState<SpaceType | null>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -17,6 +18,16 @@ export function SpacePage() {
   const [answer, setAnswer] = useState<string | null>(null);
   const [isQuerying, setIsQuerying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Use the custom hook for space status with polling
+  const {
+    status: syncStatus,
+    isLoading: isSyncLoading,
+    error: syncError,
+    refresh: refreshStatus,
+    reindex,
+    isReindexing,
+  } = useSpaceStatus(spaceKey || '');
 
   useEffect(() => {
     if (spaceKey) {
@@ -28,16 +39,9 @@ export function SpacePage() {
     if (!spaceKey) return;
 
     try {
-      const [spaceData, statusData] = await Promise.all([
-        api.spaces.get(spaceKey).catch(() => null),
-        api.spaces.getStatus(spaceKey).catch(() => null),
-      ]);
-
+      const spaceData = await api.spaces.get(spaceKey).catch(() => null);
       if (spaceData) {
         setSpace(spaceData);
-      }
-      if (statusData) {
-        setStatus(statusData);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load space');
@@ -99,6 +103,15 @@ export function SpacePage() {
     }
   };
 
+  const handlePublishStatusChange = useCallback(
+    (isPublished: boolean, publishedAt?: string) => {
+      setSpace((prev) =>
+        prev ? { ...prev, is_published: isPublished, published_at: publishedAt ?? null } : prev
+      );
+    },
+    []
+  );
+
   if (isLoading) {
     return (
       <div className="space-page">
@@ -115,37 +128,35 @@ export function SpacePage() {
             ←
           </button>
           <h1>{spaceKey}</h1>
-          {status?.indexing_in_progress && (
+          {syncStatus?.indexing_in_progress && (
             <span className="indexing-badge">Indexing...</span>
           )}
         </div>
         <div className="space-actions">
+          {space && (
+            <PublishButton
+              spaceKey={spaceKey!}
+              spaceName={space.name || spaceKey!}
+              isPublished={space.is_published ?? false}
+              publishedAt={space.published_at}
+              onStatusChange={handlePublishStatusChange}
+            />
+          )}
           <button onClick={handleDelete} className="delete-btn">
             Delete
           </button>
         </div>
       </div>
 
-      {status && (
-        <div className="space-stats">
-          <div className="stat">
-            <span className="stat-value">{status.files_indexed}</span>
-            <span className="stat-label">Files</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{status.chunks_stored}</span>
-            <span className="stat-label">Chunks</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">
-              {status.last_indexed
-                ? new Date(status.last_indexed).toLocaleDateString()
-                : 'Never'}
-            </span>
-            <span className="stat-label">Last Indexed</span>
-          </div>
-        </div>
-      )}
+      <SyncStatus
+        status={syncStatus}
+        isLoading={isSyncLoading}
+        error={syncError}
+        isReindexing={isReindexing}
+        onReindex={reindex}
+        onRefresh={refreshStatus}
+        showReindex
+      />
 
       <div className="space-tabs">
         <button
