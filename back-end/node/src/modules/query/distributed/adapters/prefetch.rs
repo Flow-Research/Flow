@@ -105,6 +105,7 @@ mod tests {
             ai_api_key: String::new(),
             redis_url: None,
             qdrant_url: "http://localhost:6334".to_string(),
+            qdrant_skip_api_key: true,
             vector_size: 384,
             min_chunk_size: 10,
             max_chunk_size: 20_000,

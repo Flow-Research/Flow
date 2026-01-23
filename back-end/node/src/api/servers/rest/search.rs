@@ -244,6 +244,10 @@ fn create_default_indexing_config() -> IndexingConfig {
         redis_url: None,
         qdrant_url: std::env::var("QDRANT_URL")
             .unwrap_or_else(|_| "http://localhost:6334".to_string()),
+        qdrant_skip_api_key: std::env::var("QDRANT_SKIP_API_KEY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(false),
         vector_size: 384,
         min_chunk_size: 10,
         max_chunk_size: 20_000,

@@ -28,7 +28,7 @@ use std::io::Read;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::modules::storage::content::{
     ContentProvider, ContentProviderError, LocalProvider, TreeNode,

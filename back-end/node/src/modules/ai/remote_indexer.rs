@@ -17,7 +17,7 @@ use swiftide::traits::EmbeddingModel;
 use swiftide_integrations::fastembed;
 use thiserror::Error;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use super::config::IndexingConfig;
 use crate::modules::storage::content::{ContentId, ContentService};

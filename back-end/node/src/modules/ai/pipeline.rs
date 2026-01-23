@@ -80,11 +80,20 @@ impl Pipeline {
     }
 
     fn qdrant(&self, collection_name: String) -> Result<integrations::qdrant::Qdrant> {
-        integrations::qdrant::Qdrant::builder()
+        let mut builder = integrations::qdrant::Qdrant::builder()
             .batch_size(self.config.storage_batch_size)
             .vector_size(self.config.vector_size as u64)
-            .collection_name(collection_name)
-            .build()
+            .collection_name(collection_name);
+
+        // For local/test instances without API key authentication
+        if self.config.qdrant_skip_api_key {
+            let client = integrations::qdrant::qdrant_client::Qdrant::from_url(&self.config.qdrant_url)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create Qdrant client: {}", e))?;
+            builder = builder.client(client);
+        }
+
+        builder.build()
     }
 
     fn collection_name(&self) -> String {

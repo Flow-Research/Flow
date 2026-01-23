@@ -22,7 +22,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::modules::network::manager::NetworkManager;
 

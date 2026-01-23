@@ -9,12 +9,15 @@
 
 use std::sync::Arc;
 
-use swiftide::integrations;
+use swiftide::integrations::qdrant::qdrant_client;
 use swiftide::traits::EmbeddingModel;
 use swiftide_integrations::fastembed;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+// Re-export qdrant types for search
+use qdrant_client::qdrant::SearchPointsBuilder;
 
 use super::search::SearchResult;
 use crate::modules::ai::config::IndexingConfig;
@@ -151,6 +154,51 @@ impl FederatedSearch {
         self.local_collections.read().await.clone()
     }
 
+    /// Discover local space collections from Qdrant.
+    ///
+    /// Queries Qdrant for collections matching the pattern `space-*-idx`
+    /// and registers them for searching.
+    pub async fn discover_collections(&self) -> Result<Vec<String>, FederatedSearchError> {
+        let client = self.create_qdrant_client()?;
+
+        // List all collections
+        let collections = client
+            .list_collections()
+            .await
+            .map_err(|e| FederatedSearchError::Qdrant(e.to_string()))?;
+
+        // Filter for space collections (space-*-idx pattern)
+        let space_collections: Vec<String> = collections
+            .collections
+            .iter()
+            .filter_map(|c| {
+                if c.name.starts_with("space-") && c.name.ends_with("-idx") {
+                    Some(c.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Register discovered collections
+        {
+            let mut local_cols = self.local_collections.write().await;
+            for col in &space_collections {
+                if !local_cols.contains(col) {
+                    local_cols.push(col.clone());
+                }
+            }
+        }
+
+        info!(
+            count = space_collections.len(),
+            collections = ?space_collections,
+            "Discovered local space collections"
+        );
+
+        Ok(space_collections)
+    }
+
     /// Perform federated search across collections.
     ///
     /// # Arguments
@@ -191,6 +239,17 @@ impl FederatedSearch {
 
         // Search local collections
         if scope == SearchScope::Local || scope == SearchScope::All {
+            // Auto-discover collections if none registered
+            {
+                let local_cols = self.local_collections.read().await;
+                if local_cols.is_empty() {
+                    drop(local_cols); // Release read lock before discover
+                    if let Err(e) = self.discover_collections().await {
+                        warn!(error = %e, "Failed to auto-discover collections");
+                    }
+                }
+            }
+
             let local_cols = self.local_collections.read().await;
 
             for collection in local_cols.iter() {
@@ -288,32 +347,78 @@ impl FederatedSearch {
     async fn search_collection(
         &self,
         collection: &str,
-        _query_embedding: &[f32],
-        _limit: usize,
+        query_embedding: &[f32],
+        limit: usize,
     ) -> Result<Vec<(String, f32, Option<String>, Option<i32>)>, FederatedSearchError> {
         debug!(collection = %collection, "Searching collection");
 
-        // Build Qdrant client for this collection
-        let qdrant = integrations::qdrant::Qdrant::builder()
-            .vector_size(self.config.vector_size as u64)
-            .collection_name(collection)
-            .build()
-            .map_err(|e| FederatedSearchError::Qdrant(e.to_string()))?;
+        // Build Qdrant client (with or without API key)
+        let client = self.create_qdrant_client()?;
 
-        // Use Qdrant's search functionality
-        // For MVP, we return empty results if collection doesn't exist
-        // Full implementation would use qdrant_client directly
-
-        // Check if collection exists (simplified check)
-        if let Err(e) = qdrant.create_index_if_not_exists().await {
-            debug!(collection = %collection, error = %e, "Collection may not exist");
-            return Ok(Vec::new());
+        // Check if collection exists
+        match client.collection_exists(collection).await {
+            Ok(false) => {
+                debug!(collection = %collection, "Collection does not exist");
+                return Ok(Vec::new());
+            }
+            Err(e) => {
+                debug!(collection = %collection, error = %e, "Failed to check collection existence");
+                return Ok(Vec::new());
+            }
+            Ok(true) => {}
         }
 
-        // For now, return empty - the actual search would be done via swiftide's query pipeline
-        // This is a placeholder for the MVP
-        debug!(collection = %collection, "Collection search not yet implemented - returning empty");
-        Ok(Vec::new())
+        // Perform vector search using qdrant_client types
+        let search_request = SearchPointsBuilder::new(
+            collection,
+            query_embedding.to_vec(),
+            limit as u64,
+        )
+        .with_payload(true)
+        .build();
+
+        let search_result = client
+            .search_points(search_request)
+            .await
+            .map_err(|e| FederatedSearchError::Qdrant(e.to_string()))?;
+
+        // Extract results
+        let mut results = Vec::new();
+        for point in search_result.result {
+            // Get CID from payload (stored as "path" in swiftide)
+            let cid = point
+                .payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("point-{:?}", point.id));
+
+            // Get content snippet from payload
+            let content = point
+                .payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            // Get chunk index if available
+            let chunk_idx = point
+                .payload
+                .get("chunk_index")
+                .and_then(|v| v.as_integer())
+                .map(|i| i as i32);
+
+            results.push((cid, point.score, content, chunk_idx));
+        }
+
+        debug!(collection = %collection, count = results.len(), "Collection search complete");
+        Ok(results)
+    }
+
+    /// Create a Qdrant client, respecting the skip_api_key config.
+    fn create_qdrant_client(&self) -> Result<qdrant_client::Qdrant, FederatedSearchError> {
+        qdrant_client::Qdrant::from_url(&self.config.qdrant_url)
+            .build()
+            .map_err(|e| FederatedSearchError::Qdrant(e.to_string()))
     }
 
     /// Convert federated results to standard SearchResult format.

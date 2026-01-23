@@ -83,4 +83,5 @@ proptest = "1.9.0"
 reqwest = "0.12.24"
 tokio-tungstenite = "0.28.0"
 tungstenite = "0.28.0"
+testcontainers = "0.23"
 
