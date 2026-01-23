@@ -1,0 +1,129 @@
+.network-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.network-preview__header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.network-preview__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 4px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.network-preview__score {
+  font-size: 0.875rem;
+  color: #888;
+}
+
+.network-preview__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.4;
+}
+
+.network-preview__content {
+  background: #0f0f0f;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.network-preview__section-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.network-preview__snippet {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #aaa;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.network-preview__metadata {
+  background: #0f0f0f;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.network-preview__field {
+  margin-bottom: 1rem;
+}
+
+.network-preview__field:last-child {
+  margin-bottom: 0;
+}
+
+.network-preview__label {
+  display: block;
+  font-size: 0.75rem;
+  color: #666;
+  margin-bottom: 0.375rem;
+}
+
+.network-preview__value-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.network-preview__value {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  background: #1a1a1a;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #888;
+  word-break: break-all;
+}
+
+.network-preview__copy-btn {
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.network-preview__copy-btn:hover {
+  background: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.network-preview__copy-btn:focus {
+  outline: 2px solid #646cff;
+  outline-offset: 2px;
+}
+
+.network-preview__note {
+  padding: 1rem;
+  background: rgba(100, 108, 255, 0.05);
+  border: 1px solid rgba(100, 108, 255, 0.2);
+  border-radius: 8px;
+}
+
+.network-preview__note p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #888;
+  line-height: 1.5;
+}

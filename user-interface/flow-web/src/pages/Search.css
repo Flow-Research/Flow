@@ -1,0 +1,161 @@
+.search-page {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.search-page__header {
+  margin-bottom: 2rem;
+}
+
+.search-page__title {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.search-page__subtitle {
+  margin: 0.5rem 0 0;
+  color: #666;
+  font-size: 1rem;
+}
+
+.search-page__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.search-page__search-bar {
+  flex: 1;
+}
+
+@media (min-width: 640px) {
+  .search-page__controls {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+.search-page__content {
+  min-height: 300px;
+}
+
+/* Empty State */
+.search-page__empty,
+.search-page__no-results {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3rem 2rem;
+  text-align: center;
+}
+
+.search-page__empty-icon,
+.search-page__no-results-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.search-page__empty h2,
+.search-page__no-results h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.search-page__empty p,
+.search-page__no-results p {
+  margin: 0 0 1.5rem;
+  color: #888;
+  max-width: 400px;
+}
+
+.search-page__tips,
+.search-page__suggestions {
+  text-align: left;
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  max-width: 400px;
+}
+
+.search-page__tips h3,
+.search-page__suggestions h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #888;
+}
+
+.search-page__tips ul,
+.search-page__suggestions ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #666;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.search-page__tips kbd {
+  display: inline-block;
+  padding: 0.125rem 0.375rem;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: #888;
+}
+
+/* Error State */
+.search-page__error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3rem 2rem;
+  text-align: center;
+  background: rgba(239, 68, 68, 0.05);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+}
+
+.search-page__error-icon {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.search-page__error h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #ef4444;
+}
+
+.search-page__error p {
+  margin: 0 0 1.5rem;
+  color: #888;
+}
+
+.search-page__retry-btn {
+  padding: 0.75rem 1.5rem;
+  background: transparent;
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  color: #ef4444;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.search-page__retry-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.search-page__retry-btn:focus {
+  outline: 2px solid #ef4444;
+  outline-offset: 2px;
+}

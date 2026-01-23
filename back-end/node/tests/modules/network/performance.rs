@@ -1,3 +1,4 @@
+use errors::AppError;
 use node::modules::network::config::{
     BootstrapConfig, ConnectionLimits, MdnsConfig, NetworkConfig,
 };
@@ -11,7 +12,9 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::bootstrap::init::{NETWORK_MANAGER_LOCK, create_test_node_data, setup_test_env};
+use crate::bootstrap::init::{
+    NETWORK_MANAGER_LOCK, create_test_node_data, set_env, setup_test_env,
+};
 
 // ============================================================================
 // Performance Metrics
@@ -63,18 +66,22 @@ fn create_performance_config(port: u16) -> NetworkConfig {
             heartbeat_interval: Duration::from_millis(200),
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 
 struct PerfTestNode {
     manager: NetworkManager,
-    _temp_dir: TempDir,
+    temp_dir: TempDir,
+    name: String,
 }
 
 impl PerfTestNode {
     async fn new(name: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         setup_test_env(&temp_dir, name);
+
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
 
         let node_data = create_test_node_data();
         let manager = NetworkManager::new(&node_data)
@@ -83,8 +90,25 @@ impl PerfTestNode {
 
         PerfTestNode {
             manager,
-            _temp_dir: temp_dir,
+            temp_dir: temp_dir,
+            name: name.to_string(),
         }
+    }
+
+    /// Re-set env vars and start the manager
+    /// NOTE: Creates config internally AFTER setting env vars to ensure correct PROVIDER_REGISTRY_DB_PATH
+    async fn start(&self, port: u16) -> Result<(), AppError> {
+        // IMPORTANT: Re-set env vars before start() because they may have been
+        // overwritten by other PerfTestNode::new() calls
+        setup_test_env(&self.temp_dir, &self.name);
+        set_env("CONTENT_TRANSFER_ENABLED", "false");
+        // Create config AFTER setting env vars so ProviderConfig::from_env() picks up correct path
+        let config = create_performance_config(port);
+        self.manager.start(&config).await
+    }
+
+    async fn _stop(&self) -> Result<(), AppError> {
+        self.manager.stop().await
     }
 }
 
@@ -97,21 +121,21 @@ impl PerfTestNode {
 async fn test_connection_establishment_latency() {
     // Measures the time from node start to first peer connection
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Start first node
     let node1 = PerfTestNode::new("perf_conn_1").await;
-    let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     sleep(Duration::from_secs(1)).await;
 
     // Start second node and measure connection time
     let node2 = PerfTestNode::new("perf_conn_2").await;
-    let config2 = create_performance_config(0);
 
     let start = Instant::now();
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Poll for connection
     let mut connected = false;
@@ -159,17 +183,17 @@ async fn test_connection_establishment_latency() {
 async fn test_message_delivery_latency() {
     // Measures end-to-end message delivery time
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
-    let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
-    let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -259,17 +283,17 @@ async fn test_message_delivery_latency() {
 async fn test_message_throughput() {
     // Measures messages per second throughput
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_msg_1").await;
-    let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_msg_2").await;
-    let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for connection
     let connected = tokio::time::timeout(Duration::from_secs(30), async {
@@ -368,17 +392,17 @@ async fn test_message_throughput() {
 async fn test_reconnection_time() {
     // Measures time to reconnect after disconnect
 
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Create and start node1 BEFORE creating node2
     let node1 = PerfTestNode::new("perf_reconn_1").await;
-    let config1 = create_performance_config(0);
-    node1.manager.start(&config1).await.unwrap();
+    node1.start(0).await.unwrap();
 
     // Now create and start node2
     let node2 = PerfTestNode::new("perf_reconn_2").await;
-    let config2 = create_performance_config(0);
-    node2.manager.start(&config2).await.unwrap();
+    node2.start(0).await.unwrap();
 
     // Wait for initial connection
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -412,8 +436,7 @@ async fn test_reconnection_time() {
     let start = Instant::now();
 
     let node2_new = PerfTestNode::new("perf_reconn_2b").await; // Different name for fresh temp dir
-    let config2_new = create_performance_config(0);
-    node2_new.manager.start(&config2_new).await.unwrap();
+    node2_new.start(0).await.unwrap();
 
     let reconnected = tokio::time::timeout(Duration::from_secs(30), async {
         loop {

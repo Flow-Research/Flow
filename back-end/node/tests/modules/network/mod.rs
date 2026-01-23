@@ -1,6 +1,9 @@
 pub mod bootstrap;
 pub mod config;
 pub mod connection_limits;
+pub mod content_announcement;
+pub mod content_transfer;
+pub mod dht_provider;
 pub mod gossipsub;
 pub mod integration;
 pub mod manager;
@@ -8,4 +11,5 @@ pub mod mdns;
 pub mod nat;
 pub mod performance;
 pub mod persistent_peer_registry;
+pub mod provider_lifecycle;
 pub mod storage;

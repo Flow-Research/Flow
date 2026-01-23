@@ -55,6 +55,7 @@ node_modules/
 
 # dotenv environment variables file
 .env
+.env.*
 .env.local
 .env.development.local
 .env.test.local
@@ -95,3 +96,15 @@ docs/_build/
 
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
+
+# QA artifacts - generated during testing
+qa/
+
+# Build-E2E state - workflow tracking
+.build-e2e-state.json
+
+code-review/
+
+# Claude Code config (machine-specific paths)
+.mcp.json
+CLAUDE.md

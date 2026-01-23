@@ -24,10 +24,24 @@ pub struct DbConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct JwtConfig {
+    pub secret: String,
+    pub expiry_hours: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CorsConfig {
+    pub allowed_origins: Vec<String>,
+    pub allow_credentials: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub db: DbConfig,
     pub kv: KvConfig,
     pub server: ServerConfig,
+    pub jwt: JwtConfig,
+    pub cors: CorsConfig,
 }
 
 impl Config {
@@ -75,6 +89,26 @@ impl Config {
         let websocket_port = get_env_u64("WEBSOCKET_PORT", 8081)? as u16;
         let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
 
+        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+            use rand::Rng;
+            let secret: String = rand::thread_rng()
+                .sample_iter(&rand::distributions::Alphanumeric)
+                .take(64)
+                .map(char::from)
+                .collect();
+            tracing::warn!("JWT_SECRET not set, using randomly generated secret. Set JWT_SECRET in production!");
+            secret
+        });
+        let jwt_expiry_hours = get_env_u64("JWT_EXPIRY_HOURS", 1)? as i64;
+
+        let cors_origins = env::var("CORS_ALLOWED_ORIGINS")
+            .unwrap_or_else(|_| "http://localhost:3000,http://localhost:8080".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let cors_allow_credentials = get_env_bool("CORS_ALLOW_CREDENTIALS", true)?;
+
         Ok(Self {
             db: DbConfig {
                 url: database_url,
@@ -95,6 +129,14 @@ impl Config {
                 rest_port,
                 websocket_port,
                 host,
+            },
+            jwt: JwtConfig {
+                secret: jwt_secret,
+                expiry_hours: jwt_expiry_hours,
+            },
+            cors: CorsConfig {
+                allowed_origins: cors_origins,
+                allow_credentials: cors_allow_credentials,
             },
         })
     }

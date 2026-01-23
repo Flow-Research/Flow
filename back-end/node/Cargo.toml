@@ -24,9 +24,12 @@ event = { path = "../event" }
 errors = { path = "../errors" }
 migration = { path = "../migration" }
 webauthn-rs = "0.5.2"
+jsonwebtoken = "9.3.0"
+instant-distance = "0.6.1"
+bincode = "1.3"
 sled = "0.34.7"
 once_cell = "1.21.3"
-axum = { version = "0.8.6", features = ["ws"] }
+axum = { version = "0.8.6", features = ["ws", "multipart"] }
 futures-util = "0.3.31"
 tower-http = { version = "0.6.6", features = ["cors"] }
 tower = "0.5.2"
@@ -60,14 +63,25 @@ text-splitter = { version = "0.28.0", features = ["markdown"] }
 swiftide = { version = "=0.31.0", features = ["all"] }
 swiftide-integrations = "=0.31.0"
 num_cpus = "1.17.0"
-libp2p = { version = "0.56.0", features = ["kad", "quic", "noise", "yamux", "tcp", "dns", "macros", "tls", "tokio", "mdns", "gossipsub"] }
+libp2p = { version = "0.56.0", features = ["kad", "quic", "noise", "yamux", "tcp", "dns", "macros", "tls", "tokio", "mdns", "gossipsub", "request-response"] }
 futures = "0.3.31"
 rocksdb = { version = "0.24.0", features = ["multi-threaded-cf", "lz4", "snappy"] }
 web-time = "1.1.0"
 hex = "0.4.3"
+cid = "0.11.1"
+multihash = "0.19.3"
+serde_ipld_dagcbor = "0.6.4"
+fastcdc = "3.2.1"
+serde_bytes = "0.11.19"
+http = "1.4.0"
+lru = "0.12"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+metrics = "0.24"
 
 [dev-dependencies]
+proptest = "1.9.0"
 reqwest = "0.12.24"
 tokio-tungstenite = "0.28.0"
 tungstenite = "0.28.0"
+testcontainers = "0.23"
 

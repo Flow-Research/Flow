@@ -73,17 +73,27 @@ pub struct Pipeline {
 
 impl Pipeline {
     fn llm_client(&self) -> integrations::ollama::Ollama {
+        // Use llama3.2:3b for faster metadata generation (~10-20x faster than llama3.1:8b)
         integrations::ollama::Ollama::default()
-            .with_default_prompt_model("llama3.1:8b")
+            .with_default_prompt_model("llama3.2:3b")
             .to_owned()
     }
 
     fn qdrant(&self, collection_name: String) -> Result<integrations::qdrant::Qdrant> {
-        integrations::qdrant::Qdrant::builder()
+        let mut builder = integrations::qdrant::Qdrant::builder()
             .batch_size(self.config.storage_batch_size)
             .vector_size(self.config.vector_size as u64)
-            .collection_name(collection_name)
-            .build()
+            .collection_name(collection_name);
+
+        // For local/test instances without API key authentication
+        if self.config.qdrant_skip_api_key {
+            let client = integrations::qdrant::qdrant_client::Qdrant::from_url(&self.config.qdrant_url)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to create Qdrant client: {}", e))?;
+            builder = builder.client(client);
+        }
+
+        builder.build()
     }
 
     fn collection_name(&self) -> String {
@@ -281,8 +291,9 @@ impl Pipeline {
         let mut pipeline =
             indexing::Pipeline::from_loader(loader).with_concurrency(self.config.concurrency);
 
-        pipeline = self.add_caching(pipeline);
+        // IMPORTANT: Validation BEFORE caching so we don't cache invalid/skipped files
         pipeline = self.add_validation_filter(pipeline);
+        pipeline = self.add_caching(pipeline);
 
         // Add rate limiting
         if self.config.rate_limit_ms > 0 {

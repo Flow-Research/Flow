@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -5,6 +6,7 @@ use chrono::Utc;
 use errors::AppError;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    QuerySelect,
 };
 use tracing::{info, warn};
 
@@ -14,6 +16,13 @@ use space::Entity as Space;
 
 use crate::modules::ai::pipeline_manager::PipelineManager;
 
+/// Creates a new space with a human-readable name derived from the directory path.
+///
+/// # Name Derivation Logic
+/// 1. Extract last path segment: `/Users/julian/Documents/specs` → `specs`
+/// 2. Handle trailing slashes: `/path/to/folder/` → `folder`
+/// 3. Handle duplicates: append `-{hash_prefix}` (e.g., `docs-7f3a`)
+/// 4. Fallback for edge cases: use first 8 chars of location hash
 pub async fn new_space(
     dir: &str,
     db: &DatabaseConnection,
@@ -61,8 +70,12 @@ pub async fn new_space(
         .ok_or_else(|| AppError::Config("Directory path contains invalid UTF-8".to_owned()))?
         .to_owned();
 
+    // Derive a unique name from the path
+    let space_name = derive_unique_name(&canonical_location, &space_key, db).await?;
+
     let new_space = space::ActiveModel {
         key: Set(space_key.clone()),
+        name: Set(Some(space_name.clone())),
         location: Set(canonical_location.clone()),
         time_created: Set(Utc::now().into()),
         ..Default::default()
@@ -71,8 +84,8 @@ pub async fn new_space(
     let result = match new_space.insert(db).await {
         Ok(space_model) => {
             info!(
-                "Successfully created space with ID: {}, Key: {}, Location: {}",
-                space_model.id, space_model.key, space_model.location
+                "Successfully created space with ID: {}, Key: {}, Name: {}, Location: {}",
+                space_model.id, space_model.key, space_name, space_model.location
             );
 
             pipeline_manager
@@ -101,6 +114,71 @@ pub async fn new_space(
     };
 
     result
+}
+
+/// Derives a unique name from a path, handling duplicates by appending hash suffixes.
+///
+/// # Examples
+/// - First space named "docs" → `docs`
+/// - Second space named "docs" → `docs-7f3a` (with hash suffix)
+async fn derive_unique_name(
+    location: &str,
+    space_key: &str,
+    db: &DatabaseConnection,
+) -> Result<String, AppError> {
+    // Extract base name from path
+    let base_name = derive_name_from_path(location, space_key);
+
+    // Check for existing spaces with same name
+    let existing_names: HashSet<String> = Space::find()
+        .select_only()
+        .column(space::Column::Name)
+        .into_tuple::<Option<String>>()
+        .all(db)
+        .await
+        .map_err(|e| AppError::Storage(Box::new(e)))?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    if !existing_names.contains(&base_name) {
+        return Ok(base_name);
+    }
+
+    // Name exists - append hash suffix
+    let suffix = &space_key[..4];
+    let unique_name = format!("{}-{}", base_name, suffix);
+
+    // Verify uniqueness (extremely unlikely to collide)
+    if existing_names.contains(&unique_name) {
+        // Use longer suffix as final fallback
+        Ok(format!("{}-{}", base_name, &space_key[..8]))
+    } else {
+        Ok(unique_name)
+    }
+}
+
+/// Derives a human-readable name from a filesystem path.
+///
+/// # Examples
+/// - `/Users/julian/Documents/specs` → `specs`
+/// - `/path/to/folder/` → `folder` (trailing slash handled)
+/// - `/` → first 8 chars of hash (fallback)
+fn derive_name_from_path(location: &str, space_key: &str) -> String {
+    // Handle trailing slashes by trimming them first
+    let trimmed = location.trim_end_matches('/');
+    let path = Path::new(trimmed);
+
+    // Try to extract the last path segment
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let trimmed_name = name.trim();
+        if !trimmed_name.is_empty() {
+            return trimmed_name.to_owned();
+        }
+    }
+
+    // Fallback: use first 8 chars of space key (which is already a hash)
+    space_key[..8].to_owned()
 }
 
 fn generate_space_key(dir: &str) -> Result<String, AppError> {
@@ -153,5 +231,52 @@ mod tests {
     fn test_generate_space_key_invalid_path() {
         let result = generate_space_key("/this/path/definitely/does/not/exist/nowhere");
         assert!(result.is_err(), "Non-existent path should return error");
+    }
+
+    #[test]
+    fn test_derive_name_normal_path() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        assert_eq!(
+            derive_name_from_path("/Users/julian/Documents/specs", key),
+            "specs"
+        );
+    }
+
+    #[test]
+    fn test_derive_name_trailing_slash() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        assert_eq!(
+            derive_name_from_path("/Users/julian/Documents/specs/", key),
+            "specs"
+        );
+    }
+
+    #[test]
+    fn test_derive_name_single_segment() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        assert_eq!(derive_name_from_path("docs", key), "docs");
+    }
+
+    #[test]
+    fn test_derive_name_root_path() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        // Root path should return hash prefix
+        let result = derive_name_from_path("/", key);
+        assert_eq!(result, "abcd1234");
+    }
+
+    #[test]
+    fn test_derive_name_unicode() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        assert_eq!(derive_name_from_path("/path/to/文档", key), "文档");
+    }
+
+    #[test]
+    fn test_derive_name_special_chars() {
+        let key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        assert_eq!(
+            derive_name_from_path("/path/to/my docs (2024)", key),
+            "my docs (2024)"
+        );
     }
 }

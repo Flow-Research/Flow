@@ -1,0 +1,63 @@
+{
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "name": "flow",
+  "root": ".",
+  "projectType": "application",
+  "targets": {
+    "stop-all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "nx run back-end:stop",
+          "nx run back-end:docker-down",
+          "nx run user-interface:stop"
+        ],
+        "parallel": true,
+        "env": {
+          "NODE_NO_WARNINGS": "1"
+        }
+      }
+    },
+    "start-all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          { "command": "nx run back-end:docker-up", "prefix": "[docker]", "color": "blue" },
+          { "command": "nx run back-end:run-node", "prefix": "[node]", "color": "green" },
+          { "command": "nx run user-interface:dev-web", "prefix": "[web]", "color": "cyan" }
+        ],
+        "parallel": true,
+        "env": {
+          "NODE_NO_WARNINGS": "1"
+        }
+      }
+    },
+    "start": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "nx run back-end:docker-up",
+          "nx run back-end:run-node &",
+          "nx run user-interface:dev-web"
+        ],
+        "parallel": false,
+        "env": {
+          "NODE_NO_WARNINGS": "1"
+        }
+      }
+    },
+    "docker-up": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "nx run back-end:docker-up"
+      }
+    },
+    "docker-down": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "nx run back-end:docker-down"
+      }
+    }
+  },
+  "tags": ["workspace"]
+}

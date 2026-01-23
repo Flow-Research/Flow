@@ -7,7 +7,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
-use crate::bootstrap::init::{create_test_node_data, set_envs, setup_test_env};
+use crate::bootstrap::init::{create_test_node_data, setup_test_env};
 
 #[tokio::test]
 #[serial]
@@ -212,20 +212,7 @@ async fn test_two_node_bootstrap_connection() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // ===== Setup Node A (bootstrap target) =====
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "bootstrap_node_a");
 
     let node_a_data = create_test_node_data();
     let node_a_port = 19001; // Fixed port for predictable address
@@ -239,20 +226,7 @@ async fn test_two_node_bootstrap_connection() {
     sleep(Duration::from_millis(500)).await;
 
     // ===== Setup Node B (bootstrap client) =====
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "bootstrap_node_b");
 
     // Construct bootstrap address pointing to Node A
     let bootstrap_addr: libp2p::Multiaddr =
@@ -400,20 +374,7 @@ async fn test_bootstrap_partial_success_with_mixed_peers() {
     let temp_dir2 = TempDir::new().unwrap();
 
     // ===== Setup Node A (reachable bootstrap) =====
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir1.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir1.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir1.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir1, "partial_node_a");
 
     let node_a_data = create_test_node_data();
     let node_a_port = 19002;
@@ -426,20 +387,7 @@ async fn test_bootstrap_partial_success_with_mixed_peers() {
     sleep(Duration::from_millis(500)).await;
 
     // ===== Setup Node B with mixed bootstrap peers =====
-    set_envs(&vec![
-        (
-            "DHT_DB_PATH",
-            temp_dir2.path().join("dht").to_str().unwrap(),
-        ),
-        (
-            "PEER_REGISTRY_DB_PATH",
-            temp_dir2.path().join("registry").to_str().unwrap(),
-        ),
-        (
-            "GOSSIP_MESSAGE_DB_PATH",
-            temp_dir2.path().join("gossip").to_str().unwrap(),
-        ),
-    ]);
+    setup_test_env(&temp_dir2, "partial_node_b");
 
     // One reachable, one unreachable bootstrap peer
     let reachable_addr: libp2p::Multiaddr =

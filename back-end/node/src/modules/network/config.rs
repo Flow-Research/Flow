@@ -1,7 +1,10 @@
+use crate::bootstrap::init::get_flow_data_dir;
 use crate::modules::network::gossipsub::GossipSubConfig;
+use crate::utils::env::{env_bool, env_path, env_u32, env_u64, env_usize};
 use libp2p::Multiaddr;
 use std::env;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::error;
 
 const DEFAULT_P2P_SERVICE_NAME: &str = "_flow-p2p._udp.local";
@@ -12,6 +15,9 @@ const DEFAULT_RESERVED_OUTBOUND_CONNECTIONS: usize = 20;
 const DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS: u64 = 100;
 const DEFAULT_BOOTSTRAP_MAX_RETRIES: u32 = 3;
 const DEFAULT_BOOTSTRAP_RETRY_DELAY_MS: u64 = 1000;
+const DEFAULT_REPROVIDE_INTERVAL_SECS: u64 = 12 * 60 * 60;
+const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 30;
 
 /// mDNS discovery configuration
 #[derive(Debug, Clone)]
@@ -34,6 +40,70 @@ impl Default for MdnsConfig {
             service_name: DEFAULT_P2P_SERVICE_NAME.to_string(),
             query_interval_secs: 30,
         }
+    }
+}
+
+/// Configuration for DHT provider behavior
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    /// Path to RocksDB directory for provider registry
+    pub db_path: std::path::PathBuf,
+
+    /// Enable automatic re-announcement of provided content
+    pub auto_reprovide_enabled: bool,
+
+    /// Interval between re-announcements in seconds
+    pub reprovide_interval_secs: u64,
+
+    /// Timeout for pending provider queries in seconds
+    pub query_timeout_secs: u64,
+
+    /// Interval for cleanup task in seconds
+    pub cleanup_interval_secs: u64,
+
+    /// Reprovide all CIDs immediately on startup
+    pub reprovide_on_startup: bool,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            db_path: get_flow_data_dir()
+                .join("network")
+                .join("provider_registry"),
+            auto_reprovide_enabled: true,
+            reprovide_interval_secs: DEFAULT_REPROVIDE_INTERVAL_SECS,
+            query_timeout_secs: DEFAULT_QUERY_TIMEOUT_SECS,
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            reprovide_on_startup: true,
+        }
+    }
+}
+
+impl ProviderConfig {
+    /// Load configuration from environment variables
+    pub fn from_env() -> Self {
+        let default_db_path = Self::default().db_path;
+        Self {
+            db_path: env_path("PROVIDER_REGISTRY_DB_PATH", default_db_path.to_str().unwrap_or(".")),
+            auto_reprovide_enabled: env_bool("PROVIDER_AUTO_REPROVIDE", true),
+            reprovide_interval_secs: env_u64("PROVIDER_REPROVIDE_INTERVAL_SECS", DEFAULT_REPROVIDE_INTERVAL_SECS),
+            query_timeout_secs: env_u64("PROVIDER_QUERY_TIMEOUT_SECS", DEFAULT_QUERY_TIMEOUT_SECS),
+            cleanup_interval_secs: env_u64("PROVIDER_CLEANUP_INTERVAL_SECS", DEFAULT_CLEANUP_INTERVAL_SECS),
+            reprovide_on_startup: env_bool("PROVIDER_REPROVIDE_ON_STARTUP", true),
+        }
+    }
+
+    pub fn reprovide_interval(&self) -> Duration {
+        Duration::from_secs(self.reprovide_interval_secs)
+    }
+
+    pub fn query_timeout(&self) -> Duration {
+        Duration::from_secs(self.query_timeout_secs)
+    }
+
+    pub fn cleanup_interval(&self) -> Duration {
+        Duration::from_secs(self.cleanup_interval_secs)
     }
 }
 
@@ -187,6 +257,8 @@ pub struct NetworkConfig {
 
     /// GossipSub configuration
     pub gossipsub: GossipSubConfig,
+
+    pub provider: ProviderConfig,
 }
 
 impl Default for NetworkConfig {
@@ -199,6 +271,7 @@ impl Default for NetworkConfig {
             connection_limits: ConnectionLimits::default(),
             bootstrap: BootstrapConfig::default(),
             gossipsub: GossipSubConfig::default(),
+            provider: ProviderConfig::from_env(),
         }
     }
 }
@@ -221,11 +294,7 @@ impl NetworkConfig {
     /// - NETWORK_BOOTSTRAP_MAX_RETRIES: Max retry attempts (default: 3)
     /// - NETWORK_BOOTSTRAP_RETRY_DELAY_MS: Base retry delay (default: 1000)
     pub fn from_env() -> Self {
-        let listen_port = env::var("NETWORK_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
+        // Bootstrap peers require special parsing (comma-separated multiaddrs)
         let bootstrap_peers = env::var("NETWORK_BOOTSTRAP")
             .ok()
             .map(|s| {
@@ -235,35 +304,7 @@ impl NetworkConfig {
             })
             .unwrap_or_default();
 
-        let enable_quic = env::var("NETWORK_ENABLE_QUIC")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true);
-
-        let mdns_enabled = env::var("NETWORK_MDNS_ENABLED")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true);
-
-        let mdns_service_name = env::var("NETWORK_MDNS_SERVICE_NAME")
-            .ok()
-            .unwrap_or_else(|| DEFAULT_P2P_SERVICE_NAME.to_string());
-
-        let mdns_query_interval = env::var("NETWORK_MDNS_QUERY_INTERVAL")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(30);
-
-        let max_connections = env::var("NETWORK_MAX_CONNECTIONS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MAX_CONNECTIONS);
-
-        let reserved_outbound = env::var("NETWORK_RESERVED_OUTBOUND")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_RESERVED_OUTBOUND_CONNECTIONS);
-
+        // Connection policy requires special error handling
         let connection_limits_policy = env::var("NETWORK_CONNECTION_POLICY")
             .ok()
             .and_then(|s| {
@@ -276,53 +317,30 @@ impl NetworkConfig {
             })
             .unwrap_or(DEFAULT_CONNECTION_LIMITS_POLICY);
 
-        let bootstrap_auto_dial = env::var("NETWORK_BOOTSTRAP_AUTO_DIAL")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true);
-
-        let bootstrap_auto_query = env::var("NETWORK_BOOTSTRAP_AUTO_QUERY")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(true);
-
-        let bootstrap_delay_ms = env::var("NETWORK_BOOTSTRAP_DELAY_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS);
-
-        let bootstrap_max_retries = env::var("NETWORK_BOOTSTRAP_MAX_RETRIES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_BOOTSTRAP_MAX_RETRIES);
-
-        let bootstrap_retry_delay_ms = env::var("NETWORK_BOOTSTRAP_RETRY_DELAY_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_BOOTSTRAP_RETRY_DELAY_MS);
-
         Self {
-            enable_quic,
-            listen_port,
+            enable_quic: env_bool("NETWORK_ENABLE_QUIC", true),
+            listen_port: env_u64("NETWORK_PORT", 0) as u16,
             bootstrap_peers,
             mdns: MdnsConfig {
-                enabled: mdns_enabled,
-                service_name: mdns_service_name,
-                query_interval_secs: mdns_query_interval,
+                enabled: env_bool("NETWORK_MDNS_ENABLED", true),
+                service_name: env::var("NETWORK_MDNS_SERVICE_NAME")
+                    .unwrap_or_else(|_| DEFAULT_P2P_SERVICE_NAME.to_string()),
+                query_interval_secs: env_u64("NETWORK_MDNS_QUERY_INTERVAL", 30),
             },
             connection_limits: ConnectionLimits {
-                max_connections,
+                max_connections: env_usize("NETWORK_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS),
                 policy: connection_limits_policy,
-                reserved_outbound,
+                reserved_outbound: env_usize("NETWORK_RESERVED_OUTBOUND", DEFAULT_RESERVED_OUTBOUND_CONNECTIONS),
             },
             bootstrap: BootstrapConfig {
-                auto_dial: bootstrap_auto_dial,
-                auto_bootstrap: bootstrap_auto_query,
-                startup_delay_ms: bootstrap_delay_ms,
-                max_retries: bootstrap_max_retries,
-                retry_delay_base_ms: bootstrap_retry_delay_ms,
+                auto_dial: env_bool("NETWORK_BOOTSTRAP_AUTO_DIAL", true),
+                auto_bootstrap: env_bool("NETWORK_BOOTSTRAP_AUTO_QUERY", true),
+                startup_delay_ms: env_u64("NETWORK_BOOTSTRAP_DELAY_MS", DEFAULT_BOOTSTRAP_STARTUP_DELAY_MS),
+                max_retries: env_u32("NETWORK_BOOTSTRAP_MAX_RETRIES", DEFAULT_BOOTSTRAP_MAX_RETRIES),
+                retry_delay_base_ms: env_u64("NETWORK_BOOTSTRAP_RETRY_DELAY_MS", DEFAULT_BOOTSTRAP_RETRY_DELAY_MS),
             },
             gossipsub: GossipSubConfig::from_env(),
+            provider: ProviderConfig::from_env(),
         }
     }
 }

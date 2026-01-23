@@ -5,6 +5,7 @@ use migration::{Migrator, MigratorTrait};
 use node::api::node::Node;
 use node::api::servers::app_state::AppState;
 use node::api::servers::rest;
+use node::bootstrap::config::{Config, CorsConfig, DbConfig, JwtConfig, ServerConfig};
 use node::bootstrap::init::NodeData;
 use node::bootstrap::init::{AuthMetadata, initialize_config_dir};
 use node::modules::ai::config::IndexingConfig;
@@ -20,6 +21,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tempfile::TempDir;
 use tracing::info;
 
@@ -73,6 +75,16 @@ pub fn setup_test_env(temp_dir: &TempDir, test_name: &str) {
             "GOSSIP_MESSAGE_DB_PATH",
             temp_dir.path().join(format!("{}_gossip", test_name)),
         );
+        std::env::set_var(
+            "BLOCK_STORE_PATH",
+            temp_dir.path().join(format!("{}_blocks", test_name)),
+        );
+        std::env::set_var(
+            "PROVIDER_REGISTRY_DB_PATH",
+            temp_dir
+                .path()
+                .join(format!("{}_provider_registry", test_name)),
+        );
     }
 }
 
@@ -110,12 +122,47 @@ pub async fn setup_test_server() -> TestServer {
     let (node, temp) = setup_test_node().await;
     let node_clone = node.clone();
     let app_state = AppState::new(node);
-    let router = rest::build_router(app_state);
+    let config = create_test_config(&temp);
+    node::modules::ssi::jwt::init_jwt_secret(&config.jwt.secret);
+    let router = rest::build_router(app_state, &config);
 
     TestServer {
         router,
         node: node_clone,
         temp,
+    }
+}
+
+fn create_test_config(temp: &TempDir) -> Config {
+    Config {
+        db: DbConfig {
+            url: format!("sqlite://{}?mode=rwc", temp.path().join("test.db").display()),
+            max_connections: 50,
+            min_connections: 1,
+            connect_timeout: Duration::from_secs(8),
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(1800),
+            logging_enabled: false,
+        },
+        kv: KvConfig {
+            path: temp.path().join("kv"),
+            enable_compression: true,
+            max_open_files: 100,
+            write_buffer_size: 64 * 1024 * 1024,
+        },
+        server: ServerConfig {
+            rest_port: 8080,
+            websocket_port: 8081,
+            host: "0.0.0.0".to_string(),
+        },
+        jwt: JwtConfig {
+            secret: "test-secret-key".to_string(),
+            expiry_hours: 1,
+        },
+        cors: CorsConfig {
+            allowed_origins: vec!["http://localhost:3000".to_string()],
+            allow_credentials: true,
+        },
     }
 }
 
@@ -202,7 +249,9 @@ async fn setup_test_network_manager(
 ) -> Result<Arc<NetworkManager>, Box<dyn std::error::Error>> {
     // Hold the lock across env var setting AND NetworkManager creation
     // This prevents parallel tests from overwriting each other's env vars
-    let _guard = NETWORK_MANAGER_LOCK.lock().unwrap();
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // Set environment variables for this test's unique paths
     setup_test_env_auto(temp_dir);
@@ -289,6 +338,155 @@ fn compute_did_from_pubkey(pub_key_bytes: &[u8]) -> String {
     multicodec_key.extend_from_slice(pub_key_bytes);
     let pub_key_multibase = multibase::encode(multibase::Base::Base58Btc, &multicodec_key);
     format!("did:key:{}", pub_key_multibase)
+}
+
+use node::modules::network::config::NetworkConfig;
+use node::modules::storage::content::{BlockStore, BlockStoreConfig};
+
+// ============================================================================
+// Two-Node Network Test Infrastructure
+// ============================================================================
+
+/// Configuration for setting up a two-node test network
+pub struct TwoNodeTestConfig {
+    pub provider_port: u16,
+    pub seeker_port: u16,
+    pub provider_prefix: String,
+    pub seeker_prefix: String,
+}
+
+impl TwoNodeTestConfig {
+    pub fn new(provider_port: u16, seeker_port: u16) -> Self {
+        let provider_suffix = format!("_prov_{}", rand::random::<u32>());
+        let seeker_suffix = format!("_seek_{}", rand::random::<u32>());
+        Self {
+            provider_port,
+            seeker_port,
+            provider_prefix: provider_suffix,
+            seeker_prefix: seeker_suffix,
+        }
+    }
+
+    /// Ports 9300/9301 - for network_provider tests
+    pub fn network_provider() -> Self {
+        Self::new(9300, 9301)
+    }
+
+    /// Ports 9400/9401 - for dag network tests
+    pub fn dag_network() -> Self {
+        Self::new(9400, 9401)
+    }
+
+    pub fn content_service() -> Self {
+        Self::new(9600, 9601)
+    }
+}
+
+/// Context for two-node test setup
+pub struct TwoNodeTestContext {
+    pub provider_manager: Arc<NetworkManager>,
+    pub seeker_manager: Arc<NetworkManager>,
+    pub provider_store: Arc<BlockStore>,
+    pub seeker_store: Arc<BlockStore>,
+    pub _provider_dir: TempDir,
+    pub _seeker_dir: TempDir,
+}
+
+pub async fn setup_two_node_network(config: TwoNodeTestConfig) -> TwoNodeTestContext {
+    // Acquire lock to prevent race conditions with env vars and RocksDB
+    let _guard = NETWORK_MANAGER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    let provider_dir = TempDir::new().expect("Failed to create provider temp dir");
+    let seeker_dir = TempDir::new().expect("Failed to create seeker temp dir");
+
+    // ========================================================================
+    // Setup provider node
+    // ========================================================================
+    setup_test_env(&provider_dir, &config.provider_prefix);
+    set_env("CONTENT_TRANSFER_ENABLED", "true");
+
+    let provider_store_config = BlockStoreConfig {
+        db_path: provider_dir.path().join("blocks"),
+        ..Default::default()
+    };
+    let provider_store =
+        Arc::new(BlockStore::new(provider_store_config).expect("Failed to create provider store"));
+
+    let provider_data = create_test_node_data();
+    let provider_manager = NetworkManager::with(&provider_data, Some(Arc::clone(&provider_store)))
+        .await
+        .expect("Failed to create provider manager");
+    let provider_manager = Arc::new(provider_manager);
+
+    // Start provider
+    let mut provider_config = NetworkConfig::default();
+    provider_config.listen_port = config.provider_port;
+    provider_config.mdns.enabled = false;
+    provider_manager
+        .start(&provider_config)
+        .await
+        .expect("Failed to start provider");
+
+    let provider_addr: libp2p::Multiaddr = format!(
+        "/ip4/127.0.0.1/udp/{}/quic-v1/p2p/{}",
+        config.provider_port,
+        provider_manager.local_peer_id()
+    )
+    .parse()
+    .unwrap();
+
+    // ========================================================================
+    // Setup seeker node
+    // ========================================================================
+    setup_test_env(&seeker_dir, &config.seeker_prefix);
+    set_env("CONTENT_TRANSFER_ENABLED", "true");
+
+    let seeker_store_config = BlockStoreConfig {
+        db_path: seeker_dir.path().join("blocks"),
+        ..Default::default()
+    };
+    let seeker_store =
+        Arc::new(BlockStore::new(seeker_store_config).expect("Failed to create seeker store"));
+
+    let seeker_data = create_test_node_data();
+    let seeker_manager = NetworkManager::with(&seeker_data, Some(Arc::clone(&seeker_store)))
+        .await
+        .expect("Failed to create seeker manager");
+    let seeker_manager = Arc::new(seeker_manager);
+
+    // Start seeker with provider as bootstrap
+    let mut seeker_config = NetworkConfig::default();
+    seeker_config.listen_port = config.seeker_port;
+    seeker_config.bootstrap_peers = vec![provider_addr];
+    seeker_manager
+        .start(&seeker_config)
+        .await
+        .expect("Failed to start seeker");
+
+    // Wait for connection and DHT sync
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    TwoNodeTestContext {
+        provider_manager,
+        seeker_manager,
+        provider_store,
+        seeker_store,
+        _provider_dir: provider_dir,
+        _seeker_dir: seeker_dir,
+    }
+}
+
+pub async fn cleanup_two_node_network(ctx: TwoNodeTestContext) {
+    // Stop managers first (releases their references to BlockStore and RocksDB)
+    let _ = ctx.seeker_manager.stop().await;
+    let _ = ctx.provider_manager.stop().await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    drop(ctx.seeker_store);
+    drop(ctx.provider_store);
 }
 
 #[test]

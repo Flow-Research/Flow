@@ -1,0 +1,68 @@
+.settings-page {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.settings-page h1 {
+  margin: 0 0 2rem;
+  font-size: 1.75rem;
+}
+
+.settings-section {
+  margin-bottom: 2rem;
+}
+
+.settings-section h2 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.settings-card {
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 1rem;
+  border: 1px solid #2a2a2a;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-label {
+  color: #888;
+  font-size: 0.875rem;
+}
+
+.setting-value {
+  color: #fff;
+  font-size: 0.875rem;
+}
+
+code.setting-value {
+  font-family: monospace;
+  background: #0f0f0f;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-info {
+  margin: 0;
+  color: #666;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}

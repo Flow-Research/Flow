@@ -1,3 +1,4 @@
+use crate::utils::env::{env_bool, env_u64, env_usize};
 use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
 use libp2p::identity::Keypair;
 use std::time::Duration;
@@ -61,48 +62,20 @@ impl Default for GossipSubConfig {
 impl GossipSubConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Self {
-        use std::env;
-
-        let enabled = env::var("GOSSIPSUB_ENABLED")
-            .map(|v| v.to_lowercase() == "true")
-            .unwrap_or(true);
-
-        let heartbeat_interval = env::var("GOSSIPSUB_HEARTBEAT_INTERVAL_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(Duration::from_secs(1));
-
-        let mesh_n = env::var("GOSSIPSUB_MESH_N")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(6);
-
-        let mesh_n_low = env::var("GOSSIPSUB_MESH_N_LOW")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
-
-        let mesh_n_high = env::var("GOSSIPSUB_MESH_N_HIGH")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(12);
-
-        let max_transmit_size = env::var("GOSSIPSUB_MAX_MESSAGE_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(65536);
-
-        let validate_signatures = env::var("GOSSIPSUB_VALIDATE_SIGNATURES")
-            .map(|v| v.to_lowercase() != "false")
-            .unwrap_or(true);
+        let enabled = env_bool("GOSSIPSUB_ENABLED", true);
+        let heartbeat_interval = Duration::from_millis(env_u64("GOSSIPSUB_HEARTBEAT_INTERVAL_MS", 1000));
+        let mesh_n = env_usize("GOSSIPSUB_MESH_N", 6);
+        let mesh_n_low = env_usize("GOSSIPSUB_MESH_N_LOW", 4);
+        let mesh_n_high = env_usize("GOSSIPSUB_MESH_N_HIGH", 12);
+        let max_transmit_size = env_usize("GOSSIPSUB_MAX_MESSAGE_SIZE", 65536);
+        let validate_signatures = env_bool("GOSSIPSUB_VALIDATE_SIGNATURES", true);
 
         info!(
-            enabled = enabled,
+            enabled,
             heartbeat_interval_ms = heartbeat_interval.as_millis(),
-            mesh_n = mesh_n,
+            mesh_n,
             max_message_size = max_transmit_size,
-            validate_signatures = validate_signatures,
+            validate_signatures,
             "GossipSub configuration loaded"
         );
 

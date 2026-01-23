@@ -1,90 +1,25 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-}
-
-.App {
-  min-height: 100vh;
+.loading-screen {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  min-height: 100vh;
+  background: #0f0f0f;
+  color: #888;
+  gap: 1rem;
 }
 
-.App-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 40px;
-  border-radius: 20px;
-  color: white;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-  max-width: 600px;
-  width: 100%;
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #2a2a2a;
+  border-top-color: #646cff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
 }
 
-.App-header h1 {
-  font-size: 3rem;
-  margin: 1rem 0;
-  font-weight: 700;
-  background: linear-gradient(45deg, #ffffff, #f0f0f0);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.App-header p {
-  font-size: 1.2rem;
-  margin: 1rem 0;
-  opacity: 0.9;
-}
-
-.card {
-  padding: 2rem;
-  margin: 2rem 0;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 15px;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.card button {
-  background: linear-gradient(45deg, #ff6b6b, #ee5a52);
-  border: none;
-  padding: 12px 24px;
-  border-radius: 25px;
-  color: white;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
-}
-
-.card button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4);
-}
-
-.card button:active {
-  transform: translateY(0);
-}
-
-.card p {
-  margin-top: 1rem;
-  font-size: 0.9rem;
-  opacity: 0.8;
-}
-
-.read-the-docs {
-  font-size: 0.9rem;
-  opacity: 0.7;
-  margin-top: 2rem;
-}
-
-code {
-  background: rgba(255, 255, 255, 0.2);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

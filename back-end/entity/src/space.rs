@@ -9,6 +9,8 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     pub key: String,
+    /// Human-readable name for the space (derived from directory path or user-specified)
+    pub name: Option<String>,
     pub location: String,
     pub time_created: DateTimeWithTimeZone,
 }

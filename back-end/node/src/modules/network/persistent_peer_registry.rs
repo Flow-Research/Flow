@@ -17,6 +17,10 @@ pub struct PeerRegistryConfig {
     pub db_path: std::path::PathBuf,
     /// Interval for background flush task (in seconds)
     pub flush_interval_secs: u64,
+    /// Maximum consecutive failures before purging a peer
+    pub max_failures: u32,
+    /// TTL in seconds for known peers (0 = disabled)
+    pub peer_ttl_secs: u64,
 }
 
 impl Default for PeerRegistryConfig {
@@ -26,6 +30,8 @@ impl Default for PeerRegistryConfig {
                 .join("network")
                 .join("peer_registry"),
             flush_interval_secs: 30, // Flush every 30 seconds
+            max_failures: 5,         // Purge after 5 consecutive failures
+            peer_ttl_secs: 7 * 24 * 60 * 60, // 7 days TTL
         }
     }
 }
@@ -42,9 +48,21 @@ impl PeerRegistryConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(30);
 
+        let max_failures = std::env::var("PEER_REGISTRY_MAX_FAILURES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+
+        let peer_ttl_secs = std::env::var("PEER_REGISTRY_TTL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7 * 24 * 60 * 60);
+
         Self {
             db_path,
             flush_interval_secs,
+            max_failures,
+            peer_ttl_secs,
         }
     }
 }
@@ -102,6 +120,17 @@ impl PersistentPeerRegistry {
             }
             Err(e) => {
                 warn!("Failed to load reconnection counts: {}", e);
+            }
+        }
+
+        // Load failure counts
+        match store.load_failure_counts() {
+            Ok(counts) => {
+                info!("Loaded {} failure counts from disk", counts.len());
+                registry.bulk_load_failure_counts(counts);
+            }
+            Err(e) => {
+                warn!("Failed to load failure counts: {}", e);
             }
         }
 
@@ -221,6 +250,16 @@ impl PersistentPeerRegistry {
                 }
             }
         }
+
+        // Connection succeeded - reset failure count and update last success
+        drop(registry); // Release the read lock before calling methods that take write locks
+        if let Err(e) = self.store.remove_failure_count(&peer_id) {
+            // Ignore errors - peer may not have a failure count
+            debug!(peer_id = %peer_id, error = %e, "No failure count to remove (expected for new peers)");
+        }
+        if let Err(e) = self.store.save_last_success(&peer_id, std::time::SystemTime::now()) {
+            error!(peer_id = %peer_id, error = %e, "Failed to save last success timestamp");
+        }
     }
 
     /// Record a connection closure
@@ -335,6 +374,173 @@ impl PersistentPeerRegistry {
     pub fn get_reconnection_count(&self, peer_id: &PeerId) -> u32 {
         let registry = self.inner.read().unwrap();
         registry.get_reconnection_count(peer_id)
+    }
+
+    /// Record a connection failure for a specific peer
+    ///
+    /// Returns true if the peer should be purged (exceeded max failures)
+    pub fn record_peer_failure(&self, peer_id: &PeerId) -> bool {
+        let failure_count = {
+            let mut registry = self.inner.write().unwrap();
+            registry.record_peer_failure(peer_id)
+        };
+
+        // Persist the failure count
+        if let Err(e) = self.store.save_failure_count(peer_id, failure_count) {
+            error!(peer_id = %peer_id, error = %e, "Failed to persist failure count");
+        }
+
+        // Check if peer should be purged
+        if failure_count >= self.config.max_failures {
+            info!(
+                peer_id = %peer_id,
+                failure_count = failure_count,
+                max_failures = self.config.max_failures,
+                "Peer exceeded max failures, marking for purge"
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// Get the current failure count for a peer
+    pub fn get_failure_count(&self, peer_id: &PeerId) -> u32 {
+        let registry = self.inner.read().unwrap();
+        registry.get_failure_count(peer_id)
+    }
+
+    /// Remove a stale peer completely from registry and storage
+    pub fn purge_stale_peer(&self, peer_id: &PeerId) {
+        // Remove from in-memory registry
+        {
+            let mut registry = self.inner.write().unwrap();
+            registry.remove_known_peer(peer_id);
+        }
+
+        // Remove from persistent storage
+        if let Err(e) = self.store.remove_known_peer(peer_id) {
+            error!(peer_id = %peer_id, error = %e, "Failed to remove stale peer from storage");
+        }
+    }
+
+    /// Purge all peers that have exceeded the failure threshold
+    ///
+    /// Returns the number of peers purged
+    pub fn purge_failed_peers(&self) -> usize {
+        let stale_peers = {
+            let registry = self.inner.read().unwrap();
+            registry.get_stale_peers(self.config.max_failures)
+        };
+
+        let count = stale_peers.len();
+        for peer_id in stale_peers {
+            self.purge_stale_peer(&peer_id);
+        }
+
+        if count > 0 {
+            info!(purged_count = count, "Purged stale peers from registry");
+        }
+
+        count
+    }
+
+    /// Reset failure count for a peer (called on successful connection)
+    pub fn reset_peer_failures(&self, peer_id: &PeerId) {
+        // Reset in-memory
+        {
+            let mut registry = self.inner.write().unwrap();
+            registry.reset_peer_failures(peer_id);
+        }
+
+        // Remove from persistent storage
+        if let Err(e) = self.store.remove_failure_count(peer_id) {
+            error!(peer_id = %peer_id, error = %e, "Failed to remove failure count from storage");
+        }
+
+        // Update last success timestamp
+        if let Err(e) = self.store.save_last_success(peer_id, std::time::SystemTime::now()) {
+            error!(peer_id = %peer_id, error = %e, "Failed to save last success timestamp");
+        }
+    }
+
+    /// Get configuration
+    pub fn config(&self) -> &PeerRegistryConfig {
+        &self.config
+    }
+
+    /// Purge peers that have exceeded the TTL without successful connection
+    ///
+    /// Returns the number of peers purged
+    pub fn purge_expired_peers(&self) -> usize {
+        // Skip if TTL is disabled
+        if self.config.peer_ttl_secs == 0 {
+            return 0;
+        }
+
+        let ttl_duration = std::time::Duration::from_secs(self.config.peer_ttl_secs);
+        let cutoff = std::time::SystemTime::now() - ttl_duration;
+
+        // Load last success timestamps from storage
+        let last_success_timestamps = match self.store.load_last_success_timestamps() {
+            Ok(timestamps) => timestamps,
+            Err(e) => {
+                warn!(error = %e, "Failed to load last success timestamps for TTL check");
+                return 0;
+            }
+        };
+
+        // Get all known peer IDs
+        let known_peer_ids: Vec<PeerId> = {
+            let registry = self.inner.read().unwrap();
+            registry.get_known_peer_ids()
+        };
+
+        let mut purged_count = 0;
+
+        for peer_id in known_peer_ids {
+            // Skip peers that are currently connected
+            if self.is_connected(&peer_id) {
+                continue;
+            }
+
+            // Check if peer has exceeded TTL
+            let should_purge = match last_success_timestamps.get(&peer_id) {
+                Some(last_success) => *last_success < cutoff,
+                // Peers with no last_success record are considered expired
+                // (they've never successfully connected)
+                None => true,
+            };
+
+            if should_purge {
+                info!(
+                    peer_id = %peer_id,
+                    ttl_secs = self.config.peer_ttl_secs,
+                    "Purging peer due to TTL expiry"
+                );
+                self.purge_stale_peer(&peer_id);
+                purged_count += 1;
+            }
+        }
+
+        if purged_count > 0 {
+            info!(
+                purged_count = purged_count,
+                ttl_secs = self.config.peer_ttl_secs,
+                "Purged expired peers based on TTL"
+            );
+        }
+
+        purged_count
+    }
+
+    /// Run all maintenance tasks: purge failed peers and expired peers
+    ///
+    /// Returns (failed_purged, expired_purged)
+    pub fn run_maintenance(&self) -> (usize, usize) {
+        let failed = self.purge_failed_peers();
+        let expired = self.purge_expired_peers();
+        (failed, expired)
     }
 }
 

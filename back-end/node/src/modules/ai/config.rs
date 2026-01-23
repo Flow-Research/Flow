@@ -10,6 +10,9 @@ pub struct IndexingConfig {
     /// Qdrant URL
     pub qdrant_url: String,
 
+    /// Skip API key check for Qdrant (useful for local/test instances)
+    pub qdrant_skip_api_key: bool,
+
     /// Vector size for embeddings
     pub vector_size: usize,
 
@@ -62,6 +65,11 @@ impl IndexingConfig {
 
             qdrant_url: std::env::var("QDRANT_URL")
                 .unwrap_or_else(|_| "http://localhost:6334".to_string()),
+
+            qdrant_skip_api_key: std::env::var("QDRANT_SKIP_API_KEY")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(false),
 
             vector_size: std::env::var("VECTOR_SIZE")
                 .ok()

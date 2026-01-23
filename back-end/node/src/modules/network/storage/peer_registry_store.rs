@@ -17,6 +17,8 @@ use tracing::{debug, error, info, warn};
 const CF_ACTIVE_PEERS: &str = "active_peers";
 const CF_KNOWN_PEERS: &str = "known_peers";
 const CF_PEER_STATS: &str = "peer_stats";
+const CF_PEER_FAILURES: &str = "peer_failures";
+const CF_PEER_LAST_SUCCESS: &str = "peer_last_success";
 
 /// Serializable version of PeerInfo with SystemTime instead of Instant
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -123,8 +125,14 @@ impl PeerRegistryStore {
         let cf_active = ColumnFamilyDescriptor::new(CF_ACTIVE_PEERS, Options::default());
         let cf_known = ColumnFamilyDescriptor::new(CF_KNOWN_PEERS, Options::default());
         let cf_stats = ColumnFamilyDescriptor::new(CF_PEER_STATS, Options::default());
+        let cf_failures = ColumnFamilyDescriptor::new(CF_PEER_FAILURES, Options::default());
+        let cf_last_success = ColumnFamilyDescriptor::new(CF_PEER_LAST_SUCCESS, Options::default());
 
-        let db = DB::open_cf_descriptors(&opts, path, vec![cf_active, cf_known, cf_stats])
+        let db = DB::open_cf_descriptors(
+            &opts,
+            path,
+            vec![cf_active, cf_known, cf_stats, cf_failures, cf_last_success],
+        )
             .map_err(|e| AppError::Storage(Box::new(e)))?;
 
         info!("RocksDB peer registry store opened successfully");
@@ -298,6 +306,144 @@ impl PeerRegistryStore {
 
         info!("Loaded {} reconnection counts from database", counts.len());
         Ok(counts)
+    }
+
+    /// Save consecutive failure count for a peer
+    pub fn save_failure_count(&self, peer_id: &PeerId, count: u32) -> Result<(), AppError> {
+        let cf = self.db.cf_handle(CF_PEER_FAILURES).ok_or_else(|| {
+            AppError::Storage("CF_PEER_FAILURES column family not found".to_string().into())
+        })?;
+
+        self.db
+            .put_cf(&cf, peer_id.to_bytes(), count.to_le_bytes())
+            .map_err(|e| {
+                AppError::Storage(format!("Failed to save failure count: {}", e).into())
+            })?;
+
+        debug!("Saved failure count {} for peer: {}", count, peer_id);
+        Ok(())
+    }
+
+    /// Load all failure counts
+    pub fn load_failure_counts(&self) -> Result<HashMap<PeerId, u32>, AppError> {
+        let cf = self.db.cf_handle(CF_PEER_FAILURES).ok_or_else(|| {
+            AppError::Storage("CF_PEER_FAILURES column family not found".to_string().into())
+        })?;
+
+        let mut counts = HashMap::new();
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            match item {
+                Ok((key, value)) => match PeerId::from_bytes(&key) {
+                    Ok(peer_id) => {
+                        if value.len() == 4 {
+                            let count =
+                                u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                            counts.insert(peer_id, count);
+                        }
+                    }
+                    Err(e) => warn!("Failed to parse PeerId from failures: {}", e),
+                },
+                Err(e) => error!("Failed to read from peer failures CF: {}", e),
+            }
+        }
+
+        debug!("Loaded {} failure counts from database", counts.len());
+        Ok(counts)
+    }
+
+    /// Remove failure count for a peer (called when connection succeeds)
+    pub fn remove_failure_count(&self, peer_id: &PeerId) -> Result<(), AppError> {
+        let cf = self.db.cf_handle(CF_PEER_FAILURES).ok_or_else(|| {
+            AppError::Storage("CF_PEER_FAILURES column family not found".to_string().into())
+        })?;
+
+        self.db.delete_cf(&cf, peer_id.to_bytes()).map_err(|e| {
+            AppError::Storage(format!("Failed to remove failure count: {}", e).into())
+        })?;
+
+        debug!("Removed failure count for peer: {}", peer_id);
+        Ok(())
+    }
+
+    /// Save last successful connection timestamp for a peer
+    pub fn save_last_success(&self, peer_id: &PeerId, timestamp: SystemTime) -> Result<(), AppError> {
+        let cf = self.db.cf_handle(CF_PEER_LAST_SUCCESS).ok_or_else(|| {
+            AppError::Storage("CF_PEER_LAST_SUCCESS column family not found".to_string().into())
+        })?;
+
+        let secs = timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.db
+            .put_cf(&cf, peer_id.to_bytes(), secs.to_le_bytes())
+            .map_err(|e| {
+                AppError::Storage(format!("Failed to save last success: {}", e).into())
+            })?;
+
+        debug!("Saved last success timestamp for peer: {}", peer_id);
+        Ok(())
+    }
+
+    /// Load all last success timestamps
+    pub fn load_last_success_timestamps(&self) -> Result<HashMap<PeerId, SystemTime>, AppError> {
+        let cf = self.db.cf_handle(CF_PEER_LAST_SUCCESS).ok_or_else(|| {
+            AppError::Storage("CF_PEER_LAST_SUCCESS column family not found".to_string().into())
+        })?;
+
+        let mut timestamps = HashMap::new();
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+
+        for item in iter {
+            match item {
+                Ok((key, value)) => match PeerId::from_bytes(&key) {
+                    Ok(peer_id) => {
+                        if value.len() == 8 {
+                            let secs = u64::from_le_bytes([
+                                value[0], value[1], value[2], value[3],
+                                value[4], value[5], value[6], value[7],
+                            ]);
+                            let timestamp = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                            timestamps.insert(peer_id, timestamp);
+                        }
+                    }
+                    Err(e) => warn!("Failed to parse PeerId from last_success: {}", e),
+                },
+                Err(e) => error!("Failed to read from peer last_success CF: {}", e),
+            }
+        }
+
+        debug!("Loaded {} last success timestamps from database", timestamps.len());
+        Ok(timestamps)
+    }
+
+    /// Remove a known peer completely (all data)
+    pub fn remove_known_peer(&self, peer_id: &PeerId) -> Result<(), AppError> {
+        // Remove from known_peers
+        if let Some(cf) = self.db.cf_handle(CF_KNOWN_PEERS) {
+            self.db.delete_cf(&cf, peer_id.to_bytes()).ok();
+        }
+
+        // Remove from failures
+        if let Some(cf) = self.db.cf_handle(CF_PEER_FAILURES) {
+            self.db.delete_cf(&cf, peer_id.to_bytes()).ok();
+        }
+
+        // Remove from last_success
+        if let Some(cf) = self.db.cf_handle(CF_PEER_LAST_SUCCESS) {
+            self.db.delete_cf(&cf, peer_id.to_bytes()).ok();
+        }
+
+        // Remove from reconnection counts
+        if let Some(cf) = self.db.cf_handle(CF_PEER_STATS) {
+            self.db.delete_cf(&cf, peer_id.to_bytes()).ok();
+        }
+
+        info!("Removed stale peer from database: {}", peer_id);
+        Ok(())
     }
 
     /// Flush all pending writes to disk
