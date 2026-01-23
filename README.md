@@ -1,6 +1,5 @@
 # Flow
 
-<<<<<<< HEAD
 **A peer-to-peer network for storing, sharing, and searching knowledge.**
 
 Flow lets you store content locally with full ownership, share it selectively with others, and search across the entire network. Every piece of content is tracked with provenance, and contributions can be rewarded automatically.
@@ -14,29 +13,16 @@ Flow lets you store content locally with full ownership, share it selectively wi
 | **Semantic search** | Find content by meaning, not just keywords — works across local and network data |
 | **Provenance tracking** | Know where content came from and how it's been used |
 | **Programmable rewards** | Define rules for compensating valuable contributions *(coming soon)* |
-=======
-Flow is a decentralized automation network where user-defined goals run as verifiable jobs across a peer compute and knowledge marketplace.
 
-Users keep their data in private environments they control. Agents execute jobs with signed events and receipts. The network keeps the shared state in sync. Programmable incentives settle contributions automatically based on recorded provenance, while access rules help protect privacy.
->>>>>>> 6402be9391ccb5e8f210c76852ed8dc814865c3d
 
 ## Concept Diagram
 
 ![Flow concept](https://drive.google.com/uc?export=view&id=11-YO0bh2xKSGA4Zoi85Yx8zoM8vZI2Jy "Flow")
 
-<<<<<<< HEAD
-> **Note:** This diagram links to Google Drive. If it doesn't load, the image may need to be moved to the repository.
-=======
-At the core, each user or organisation controls a portable knowledge base, anchored to their identity. Apps, tools, and agents are built on top of this base to provide experiences for users. Users can share specific parts of their data with other users and agents. Access, usage, and changes are checked and logged using cryptographic signatures and clear policies.
-
-Flow is not a single app or API, but a network of protocols, services, and agents that help people automate work, share knowledge, and earn from their contributions.
->>>>>>> 6402be9391ccb5e8f210c76852ed8dc814865c3d
-
 **The core idea:** Each user controls their own Knowledge Base. They can share parts of it with others on the network. The network enforces access rules and tracks contributions.
 
 ## Core Principles
 
-<<<<<<< HEAD
 | Principle | Description |
 |-----------|-------------|
 | **Local-first** | Your data lives on your machine; cloud is optional |
@@ -45,16 +31,6 @@ Flow is not a single app or API, but a network of protocols, services, and agent
 | **Capability-based** | Access controlled by tokens you grant, not central authority |
 | **Peer-to-peer** | Nodes connect directly; no central server required |
 | **Provenance-tracked** | Origin and history of all content is preserved |
-=======
-1.  **Ubiquitous, Verifiable Computing:** Compute can run anywhere, but every claim about that compute is verifiable.
-2.  **Capability-Based Access:** Authentication and authorization are decentralized. Permissions are based on Verifiable Credentials and Capabilities.
-3.  **Knowledge graph and vector indexes with provenance** Flow maintains a shared knowledge graph and vector index across data stored in many systems, and ties every fact and embedding back to its source and history.
-4.  **Peer-to-Peer networking:** Agents and users connect and coordinate via a decentralized network.
-5.  **Decentralized Execution:** Execution is local-first, edge-native, cloud-optional. Workflows can be distributed and executed in a decentralized manner.
-6.  **Agent Explainability (SLRPA):** Agents operate on a Sense → Learn → Reason → Predict → Act cycle.
-7.  **Programmable Incentives:** Rewards and reputation are customizable and trackable.
->>>>>>> 6402be9391ccb5e8f210c76852ed8dc814865c3d
-
 
 ## Architecture
 
@@ -98,7 +74,6 @@ User-facing capabilities.
 
 ## How It Works Today
 
-<<<<<<< HEAD
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │  Add Files  │ ──► │   Index &   │ ──► │   Search    │
@@ -131,16 +106,6 @@ User-facing capabilities.
 - 🔮 DAG-based workflows with verifiable execution
 - 🔮 Programmable rewards for contributions
 - 🔮 Decentralized compute marketplace
-=======
-1.  Create and update your objects.
-2.  Everything is signed and secure using your digital ID.
-3.  Connect to the network and find what you need.
-4.  Start Agents that plug into your own knowledge and data.
-5.  Agents sense, learn, think, predict, and act on your behalf.
-6.  Their actions and results are recorded and checked.
-7.  Rewards are given based on clear rules and proven contributions.
-8.  Explore and manage all of this through a simple, visual interface.
->>>>>>> 6402be9391ccb5e8f210c76852ed8dc814865c3d
 
 
 ## Implementation Status
