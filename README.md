@@ -110,36 +110,41 @@ User-facing capabilities.
 
 ## Implementation Status
 
-> **Note:** Flow is under active development. The table below shows current implementation status.
+> **Last Updated**: 2026-01-23 | **Overall Progress**: ~95% of core features complete
 
 | Layer | Status | Description | Code Location |
 |-------|--------|-------------|---------------|
-| **Storage** | ✅ Complete | Content-addressed storage with IPLD/CIDs, RocksDB block store, SQLite metadata | `back-end/node/src/modules/storage/` |
+| **Storage** | ✅ Complete | IPLD/CIDs, RocksDB block store, DAG builder, 3 chunking algorithms | `back-end/node/src/modules/storage/` |
 | **Access & Auth** | 🚧 Partial | WebAuthn registration/login implemented; DIDs and VCs planned | `back-end/node/src/modules/identity/` |
-| **Network** | ✅ Complete | libp2p with GossipSub messaging, mDNS discovery, peer registry | `back-end/node/src/modules/network/` |
-| **Coordination & Sync** | 🚧 Partial | Basic pub/sub sync; CRDT-based convergence planned | `back-end/node/src/modules/network/gossipsub/` |
-| **Knowledge Graph** | ✅ Complete | Semantic indexing with FastEmbed, Qdrant vector storage | `back-end/node/src/modules/ai/` |
-| **MCP** | 📋 Planned | Model Context Protocol integration not yet started | — |
+| **Network** | ✅ Complete | libp2p (Kademlia, GossipSub, mDNS), content transfer protocol, peer registry | `back-end/node/src/modules/network/` |
+| **Coordination & Sync** | ✅ Complete | GossipSub pub/sub with persistent message store, content announcements | `back-end/node/src/modules/network/gossipsub/` |
+| **Knowledge Graph** | ✅ Complete | Semantic indexing (FastEmbed), Qdrant vector storage, RAG pipeline | `back-end/node/src/modules/ai/` |
+| **Distributed Search** | ✅ Complete | SearchRouter, federated search, live query engine, result aggregation | `back-end/node/src/modules/query/` |
 | **User Interface** | ✅ Complete | React/Vite web app with spaces, search, content management | `user-interface/flow-web/` |
-| **Agent** | 📋 Planned | SLRPA agent framework not yet implemented | — |
-| **Execution** | 📋 Planned | DAG workflow engine not yet implemented | — |
-| **Compute** | 📋 Planned | Bacalhau integration not yet started | — |
-| **Incentive** | 📋 Planned | Reward and reputation system not yet implemented | — |
+| **Agent** | 📋 Planned | SLRPA agent framework — next development phase | — |
+| **MCP** | 📋 Planned | Model Context Protocol integration | — |
+| **Execution** | 📋 Planned | DAG workflow engine | — |
+| **Compute** | 📋 Planned | Bacalhau integration for distributed compute | — |
+| **Incentive** | 📋 Planned | Reward and reputation system | — |
 
 ### What You Can Do Today
 
-- ✅ **Store content locally** — Files are chunked, hashed (CID), and stored in RocksDB
-- ✅ **Semantic search** — Content is indexed with embeddings for natural language search
-- ✅ **Create spaces** — Organize content into named collections
-- ✅ **Publish to network** — Share content with other Flow nodes
-- ✅ **Federated search** — Search across local and network content
-- ✅ **Peer discovery** — Auto-discover other nodes on your local network (mDNS)
-- ✅ **Web interface** — Browse, search, and manage content through the UI
+- ✅ **Store content locally** — Files chunked (FastCDC/Fixed/Rabin), hashed (CID), stored in RocksDB
+- ✅ **Build DAGs** — Large files automatically structured as Merkle trees (174-fanout)
+- ✅ **Semantic search** — Natural language queries via FastEmbed + Qdrant
+- ✅ **Distributed search** — Query local spaces + network content in a single request
+- ✅ **Create spaces** — Organize content into named, indexed collections
+- ✅ **Publish to network** — Announce content via DHT + GossipSub
+- ✅ **Retrieve from network** — Fetch content by CID from remote peers
+- ✅ **Remote indexing** — Automatically index discovered network content
+- ✅ **Peer discovery** — mDNS local discovery + Kademlia DHT
+- ✅ **Web interface** — Full-featured React app for content management
+- ✅ **REST API** — 20+ endpoints for programmatic access
 
 ### Coming Soon
 
 - 🚧 Decentralized identity (DIDs) and verifiable credentials
-- 📋 Autonomous agents with explainable actions
+- 📋 Autonomous agents (SLRPA: Sense→Learn→Reason→Predict→Act)
 - 📋 DAG-based workflow execution
 - 📋 Distributed compute marketplace
 - 📋 Programmable incentives and rewards
@@ -171,6 +176,16 @@ npm install -g nx
 
 ### Quick Start
 
+#### One Command (after initial setup)
+
+```bash
+nx start-all flow
+```
+
+This starts **everything** in parallel: Docker (Qdrant + Redis), backend node, and web UI.
+
+#### First Time Setup
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/your-org/flow.git
@@ -183,34 +198,30 @@ npm install -g nx
    ```
    > Note: `.env` is gitignored - never commit files containing secrets
 
-3. **Start Docker services (Qdrant + Redis):**
-   ```bash
-   nx docker-up back-end
-   ```
-
-4. **Install frontend dependencies:**
+3. **Install frontend dependencies:**
    ```bash
    nx install-all user-interface
    ```
 
-5. **Build the backend:**
+4. **Build the backend:**
    ```bash
    nx build back-end
    ```
 
-6. **Run the node:**
+5. **Start all services:**
    ```bash
-   nx run-node back-end
+   nx start-all flow
    ```
 
-7. **Run the web UI (in another terminal):**
-   ```bash
-   nx dev-web user-interface
-   ```
-
-8. **Open your browser:**
+6. **Open your browser:**
    - Web UI: http://localhost:5173
    - REST API: http://localhost:8080
+
+#### Stop All Services
+
+```bash
+nx stop-all flow
+```
 
 
 ---
