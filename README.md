@@ -176,6 +176,16 @@ npm install -g nx
 
 ### Quick Start
 
+#### One Command (after initial setup)
+
+```bash
+nx start-all flow
+```
+
+This starts **everything** in parallel: Docker (Qdrant + Redis), backend node, and web UI.
+
+#### First Time Setup
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/your-org/flow.git
@@ -188,34 +198,30 @@ npm install -g nx
    ```
    > Note: `.env` is gitignored - never commit files containing secrets
 
-3. **Start Docker services (Qdrant + Redis):**
-   ```bash
-   nx docker-up back-end
-   ```
-
-4. **Install frontend dependencies:**
+3. **Install frontend dependencies:**
    ```bash
    nx install-all user-interface
    ```
 
-5. **Build the backend:**
+4. **Build the backend:**
    ```bash
    nx build back-end
    ```
 
-6. **Run the node:**
+5. **Start all services:**
    ```bash
-   nx run-node back-end
+   nx start-all flow
    ```
 
-7. **Run the web UI (in another terminal):**
-   ```bash
-   nx dev-web user-interface
-   ```
-
-8. **Open your browser:**
+6. **Open your browser:**
    - Web UI: http://localhost:5173
    - REST API: http://localhost:8080
+
+#### Stop All Services
+
+```bash
+nx stop-all flow
+```
 
 
 ---
