@@ -2,7 +2,7 @@
 
 **A peer-to-peer network for storing, sharing, and searching knowledge.**
 
-Flow lets you store content locally with full ownership, share it selectively with others, and search across the entire network. Every piece of content is tracked with provenance, and contributions can be rewarded automatically.
+Flow lets you store content with full ownership, share it selectively with others, and search across the entire network. Every piece of content is tracked with provenance, and contributions can be rewarded automatically.
 
 ## What Flow Does
 
